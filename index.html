@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Dienstplan Notaufnahme</title>
+<link rel="stylesheet" href="css/app.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">ZNA</div>
+      <div><h1>Dienstplan Notaufnahme</h1><p id="modeLine">Wochenplanung Früh · Spät · Nacht</p></div>
+    </div>
+    <nav class="seg mainnav" id="mainNav" aria-label="Seite">
+      <button data-route="overview" id="navOverview">Übersicht</button>
+      <button data-route="week" id="navWeek">Wochenplan</button>
+    </nav>
+    <nav class="weeknav" id="weekNav" aria-label="Woche wählen">
+      <button class="btn icon" id="prevW" aria-label="Vorherige Woche">‹</button>
+      <div class="kw"><b id="kwLabel">KW</b><span id="kwRange" class="num"></span></div>
+      <button class="btn icon" id="nextW" aria-label="Nächste Woche">›</button>
+      <button class="btn" id="todayW">Heute</button>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap"><div id="notice" class="notice" hidden></div></div>
+
+<main class="wrap">
+  <section class="panel" id="overview" aria-labelledby="ovH" hidden>
+    <div class="panel-head">
+      <h2 id="ovH">Alle Wochen</h2>
+      <span class="sub" id="ovSub"></span>
+      <div class="yearnav"><button class="btn icon" id="yPrev" aria-label="Vorheriges Jahr">‹</button><b id="yLabel" class="num"></b><button class="btn icon" id="yNext" aria-label="Nächstes Jahr">›</button></div>
+    </div>
+    <div class="summary" id="ovSummary"></div>
+    <div class="months" id="ovBody"></div>
+  </section>
+
+  <section class="panel" id="planPanel" aria-labelledby="planH">
+    <div class="panel-head">
+      <h2 id="planH">Wochenplan</h2>
+      <div class="seg" id="viewTabs" role="tablist" aria-label="Ansicht">
+        <button role="tab" id="tabAreas" data-view="areas">Nach Bereich</button>
+        <button role="tab" id="tabPeople" data-view="people">Nach Person</button>
+      </div>
+      <div class="tools" id="planTools">
+        <button class="btn" id="exportPdf">PDF exportieren</button>
+        <button class="btn" id="copyPrev">Vorwoche übernehmen</button>
+        <button class="btn danger" id="clearWeek">Woche leeren</button>
+      </div>
+    </div>
+    <p class="help" id="help"></p>
+    <div class="summary" id="summary"></div>
+    <div class="brushbar" id="brushbar" role="toolbar" aria-label="Abwesenheit eintragen" hidden></div>
+    <div id="planBody"><div class="empty"><p>Lade Dienstplan …</p></div></div>
+  </section>
+
+  <div class="grid2" id="masterData">
+    <section class="panel" aria-labelledby="posH">
+      <div class="panel-head"><h2 id="posH">Bereiche</h2><span class="sub">Kürzel und Mindestbesetzung je Schicht</span></div>
+      <div class="list" id="posList"></div>
+      <form class="add pos" id="posForm" autocomplete="off">
+        <label>Bereich<input id="posName" required placeholder="z. B. Lieger D"></label>
+        <label>Kürzel<input id="posShort" required maxlength="5" placeholder="LD"></label>
+        <label>Soll F<input id="posF" class="n" type="number" min="0" max="20" value="1"></label>
+        <label>Soll S<input id="posS" class="n" type="number" min="0" max="20" value="1"></label>
+        <label>Soll N<input id="posN" class="n" type="number" min="0" max="20" value="1"></label>
+        <button class="btn primary" type="submit">Hinzufügen</button>
+      </form>
+      <p class="err" id="posErr" hidden></p>
+    </section>
+
+    <section class="panel" aria-labelledby="stH">
+      <div class="panel-head"><h2 id="stH">Mitarbeitende</h2><span class="sub" id="stCount"></span></div>
+      <div class="list" id="stList"></div>
+      <form class="add st" id="stForm" autocomplete="off">
+        <label>Name<input id="stName" required placeholder="Vor- und Nachname"></label>
+        <label>Qualifikation<select id="stQual"></select></label>
+        <label>Std./Wo.<input id="stHours" class="n" type="number" min="0" max="60" step="0.5" value="38.5"></label>
+        <button class="btn primary" type="submit">Hinzufügen</button>
+      </form>
+      <div class="qlegend" id="qLegend"></div>
+      <p class="hint">Jede Person kann in jedem Bereich eingeplant werden. Wochenstunden laut Vertrag (Vollzeit TVöD: 38,5 h).</p>
+    </section>
+  </div>
+  <section class="panel" id="dataPanel" aria-labelledby="dataH">
+    <div class="panel-head"><h2 id="dataH">Daten sichern</h2><span class="sub">Alles wird nur in diesem Browser gespeichert</span></div>
+    <div class="datapanel">
+      <p>Der Dienstplan speichert Bereiche, Mitarbeitende und alle Wochen im Speicher dieses Browsers auf diesem Gerät. Andere Geräte oder Browser sehen diese Daten nicht. Lade regelmäßig eine Sicherung herunter. Mit derselben Datei kannst du den Plan auf einem anderen Gerät öffnen oder nach dem Löschen des Browserverlaufs wiederherstellen.</p>
+      <div class="acts">
+        <button class="btn primary" id="backupBtn">Sicherung herunterladen</button>
+        <button class="btn" id="restoreBtn">Sicherung laden …</button>
+        <input type="file" id="restoreFile" accept=".json,application/json" hidden>
+      </div>
+      <span class="stamp" id="backupStamp"></span>
+    </div>
+  </section>
+</main>
+
+<div class="picker" id="picker" role="dialog" aria-modal="false" aria-labelledby="pickT" hidden>
+  <div class="ph">
+    <div class="t"><span class="code" id="pickCode"></span><div><b id="pickT"></b><br><span id="pickSub"></span></div><button class="x" id="pickClose" aria-label="Schließen">×</button></div>
+    <input id="pickQ" type="search" placeholder="Name suchen …" aria-label="Name suchen">
+  </div>
+  <div class="pl" id="pickList"></div>
+</div>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+"use strict";
 (function () {
   "use strict";
   const SHIFTS = {
@@ -52,79 +53,66 @@
   const state = {
     allWeeks: {}, ovYear: isoWeek(mondayOf(new Date())).y,
     monday: mondayOf(new Date()), positions: [], staff: [], slots: {}, cells: {}, weekExists: false,
-    pending: {}, brush: "U", canWrite: false, canAdmin: false, myStaffId: null, loaded: { pos: false, st: false }, armed: new Set(), picker: null
+    pending: {}, brush: "U", canWrite: true, loaded: { pos: false, st: false }, armed: new Set(), picker: null
   };
-  let ME = null;
-  const roleOf = () => state.canAdmin ? "lead" : state.canWrite ? "plan" : "read";
-  const ROLE_LABEL = { lead: "Leitung", plan: "Planung", read: "Lesen" };
-  const ROLE_OF_SERVER = { admin: "lead", planner: "plan", reader: "read" };
-  const myStaff = () => state.myStaffId ? state.staff.find((s) => s.id === state.myStaffId) : null;
-  const initials = (n) => String(n || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   let adapter = null, unsubWeek = null, writeChain = Promise.resolve(), IDX = null;
 
-  // ---------- Server-Verbindung ----------
-  async function api(method, url, body) {
-    const opt = { method, headers: { "X-Requested-With": "zna" }, credentials: "same-origin" };
-    if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-    let res;
-    try { res = await fetch(url, opt); } catch (e) { const err = new Error("offline"); err.status = 0; throw err; }
-    let data = null; try { data = await res.json(); } catch (e) {}
-    if (!res.ok) {
-      const err = new Error((data && data.error) || "Fehler " + res.status); err.status = res.status; err.code = data && data.code; err.body = data;
-      if (res.status === 401 && ME && url !== "/api/me/password") { showNotice("Deine Sitzung ist abgelaufen. Bitte melde dich neu an.", true); setTimeout(() => location.reload(), 1500); }
-      throw err;
+  // ---------- Speicher ----------
+  function deepMerge(t, p) { for (const k in p) { const v = p[k]; if (v && typeof v === "object" && !Array.isArray(v)) { if (!t[k] || typeof t[k] !== "object" || Array.isArray(t[k])) t[k] = {}; deepMerge(t[k], v); } else t[k] = v; } return t; }
+  // Startwerte: die Bereiche der Notaufnahme
+  const DEFAULT_POSITIONS = {
+    p_lieger_a: { name: "Lieger A", short: "LA", order: 0, soll: { F: 1, S: 1, N: 1 } },
+    p_lieger_b: { name: "Lieger B", short: "LB", order: 1, soll: { F: 1, S: 1, N: 1 } },
+    p_lieger_c: { name: "Lieger C", short: "LC", order: 2, soll: { F: 1, S: 1, N: 0 } },
+    p_springer: { name: "Springer", short: "SPR", order: 3, soll: { F: 1, S: 1, N: 1 } },
+    p_aufnahmestation: { name: "Aufnahmestation", short: "AST", order: 4, soll: { F: 1, S: 1, N: 0 } },
+    p_aufnahme_triage: { name: "Aufnahme & Triage", short: "AT", order: 5, soll: { F: 1, S: 1, N: 0 } }
+  };
+  const STORE_KEY = "zna-dienstplan";
+  function localAdapter() {
+    let data = null, storageOk = true;
+    const read = () => { try { const raw = localStorage.getItem(STORE_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { storageOk = false; return null; } };
+    data = read();
+    if (!data) { data = { positions: clone(DEFAULT_POSITIONS), staff: {}, weeks: {}, savedAt: null, backupAt: null }; persist(); }
+    ["positions", "staff", "weeks"].forEach((k) => { if (!data[k] || typeof data[k] !== "object") data[k] = {}; });
+    const subs = { positions: [], staff: [], weeks: [], all: [] }, meta = { fromCache: false };
+    function persist() {
+      data.savedAt = new Date().toISOString();
+      try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); storageOk = true; }
+      catch (e) { storageOk = false; showNotice("Speichern im Browser ist nicht möglich (privates Fenster oder Speicher voll). Lade eine Sicherung herunter, sonst gehen die Änderungen verloren.", true); }
     }
-    return data;
-  }
-  function apiAdapter() {
-    const subs = { positions: [], staff: [], all: [], week: null };
-    const META = { fromCache: false };
-    async function loadData() {
-      const d = await api("GET", "/api/data");
-      subs.positions.forEach((cb) => cb(d.positions, META)); subs.staff.forEach((cb) => cb(d.staff, META));
-    }
-    async function loadAll() { const d = await api("GET", "/api/weeks"); subs.all.forEach((cb) => cb(d.weeks)); }
-    async function loadWeek() {
-      const w = subs.week; if (!w) return;
-      const d = await api("GET", "/api/weeks/" + w.id);
-      if (subs.week === w) w.cb(d.exists ? d : null, META);
-    }
-    let allTimer = null;
-    const soonAll = () => { clearTimeout(allTimer); allTimer = setTimeout(() => loadAll().catch(() => {}), 400); };
-    function connect() {
-      if (!window.EventSource) { setInterval(() => { loadData().catch(() => {}); loadWeek().catch(() => {}); soonAll(); }, 20000); return; }
-      const es = new EventSource("/api/events");
-      es.addEventListener("change", (ev) => {
-        let m = {}; try { m = JSON.parse(ev.data); } catch (e) {}
-        if (m.type === "data") loadData().catch(() => {});
-        if (m.type === "week") { soonAll(); if (subs.week && subs.week.id === m.id) loadWeek().catch(() => {}); }
-        if (m.type === "users") onUsersChanged();
-      });
-      // Nach Verbindungsabbruch alles neu laden, damit nichts verpasst wird
-      let wasDown = false;
-      es.onerror = () => { wasDown = true; };
-      es.onopen = () => { if (wasDown) { wasDown = false; loadData().catch(() => {}); loadWeek().catch(() => {}); soonAll(); } };
-    }
+    const emitOnly = (kind) => {
+      if (kind === "weeks") { subs.all.forEach((cb) => cb(clone(data.weeks))); subs.weeks.forEach((s) => s.cb(data.weeks[s.id] ? clone(data.weeks[s.id]) : null, meta)); }
+      else subs[kind].forEach((cb) => cb(Object.entries(data[kind]).map(([id, v]) => Object.assign({ id }, v)), meta));
+    };
+    const emit = (kind) => { persist(); emitOnly(kind); };
+    const emitAll = () => ["positions", "staff", "weeks"].forEach(emitOnly);
+    // Gleicher Browser, anderer Tab: Änderungen übernehmen
+    window.addEventListener("storage", (e) => { if (e.key === STORE_KEY && e.newValue) { try { data = JSON.parse(e.newValue); emitAll(); } catch (err) {} } });
+    const sub = (kind) => (cb) => { subs[kind].push(cb); setTimeout(() => emitOnly(kind)); return () => { subs[kind] = subs[kind].filter((x) => x !== cb); }; };
     return {
-      start: async () => { await loadData(); loadAll().catch(() => {}); connect(); },
-      subPositions: (cb) => { subs.positions.push(cb); },
-      subStaff: (cb) => { subs.staff.push(cb); },
-      subAllWeeks: (cb) => { subs.all.push(cb); },
-      subWeek: (id, cb) => { const w = { id, cb }; subs.week = w; loadWeek().catch((e) => showNotice(errText(e), true)); return () => { if (subs.week === w) subs.week = null; }; },
-      savePosition: (p) => api("PUT", "/api/positions/" + encodeURIComponent(p.id), p),
-      deletePosition: (id) => api("DELETE", "/api/positions/" + encodeURIComponent(id)),
-      saveStaff: (p) => api("PUT", "/api/staff/" + encodeURIComponent(p.id), p),
-      deleteStaff: (id) => api("DELETE", "/api/staff/" + encodeURIComponent(id)),
-      patchWeek: (wk, op) => api("PATCH", "/api/weeks/" + wk, op),
-      copyPrev: (wk) => api("POST", "/api/weeks/" + wk + "/copy-previous"),
-      clearWeek: (wk) => api("DELETE", "/api/weeks/" + wk),
-      reloadWeek: () => loadWeek()
+      storageOk: () => storageOk,
+      subPositions: sub("positions"), subStaff: sub("staff"),
+      subAllWeeks: (cb) => { subs.all.push(cb); setTimeout(() => cb(clone(data.weeks))); return () => {}; },
+      subWeek: (id, cb) => { const s = { id, cb }; subs.weeks.push(s); setTimeout(() => cb(data.weeks[id] ? clone(data.weeks[id]) : null, meta)); return () => { subs.weeks = subs.weeks.filter((x) => x !== s); }; },
+      savePosition: async (p) => { const { id, ...r } = p; data.positions[id] = r; emit("positions"); },
+      deletePosition: async (id) => { delete data.positions[id]; emit("positions"); },
+      saveStaff: async (p) => { const { id, ...r } = p; data.staff[id] = r; emit("staff"); },
+      deleteStaff: async (id) => { delete data.staff[id]; emit("staff"); },
+      patchWeek: async (wk, patch) => { deepMerge(data.weeks[wk] || (data.weeks[wk] = {}), clone(patch)); emit("weeks"); },
+      getWeek: async (wk) => data.weeks[wk] ? clone(data.weeks[wk]) : null,
+      setWeek: async (wk, v) => { data.weeks[wk] = clone(v); emit("weeks"); },
+      exportData: () => { data.backupAt = new Date().toISOString(); persist(); return { app: "dienstplan-zna", version: 1, exportedAt: data.backupAt, positions: data.positions, staff: data.staff, weeks: data.weeks }; },
+      importData: (obj) => {
+        if (!obj || obj.app !== "dienstplan-zna" || typeof obj.positions !== "object" || typeof obj.staff !== "object" || typeof obj.weeks !== "object") throw new Error("format");
+        data = { positions: obj.positions || {}, staff: obj.staff || {}, weeks: obj.weeks || {}, savedAt: null, backupAt: obj.exportedAt || null };
+        persist(); emitAll();
+      },
+      lastBackup: () => data.backupAt
     };
   }
   function errText(e) {
-    if (!e) return "Unbekannter Fehler.";
-    if (e.status === 0) return "Keine Verbindung zum Server. Bitte prüfe das Netzwerk und versuche es erneut.";
-    if (e.status >= 400 && e.status < 500 && e.message) return e.message;
+    const c = e && e.code;
     return "Speichern gerade nicht möglich. Bitte gleich noch einmal versuchen.";
   }
   let noticeTimer = null;
@@ -196,13 +184,7 @@
       if (du.length && ABSENT.includes(absence(s.id, d))) conf++;
       if (d > 0 && du.length && restBad(IDX.code(s.id, d - 1), du[0].sh)) rest++;
     } });
-    const ms = myStaff(); let mine = "";
-    if (ms && IDX.duties[ms.id]) {
-      const pb = posById(), parts = [];
-      for (let d = 0; d < 7; d++) IDX.duties[ms.id][d].forEach((x) => parts.push(DAYS[d] + " " + x.sh + " " + ((pb[x.posId] || {}).short || "")));
-      mine = '<span class="pill mep">' + (parts.length ? "Deine Dienste: " + esc(parts.join(" · ")) : "Du hast diese Woche keine Dienste") + '</span>';
-    }
-    sum.innerHTML = mine + (under ? '<span class="pill badp">' + under + ' Schichten unterbesetzt · ' + missing + ' Personen fehlen</span>' : '<span class="pill okp">Mindestbesetzung überall erfüllt</span>') +
+    sum.innerHTML = (under ? '<span class="pill badp">' + under + ' Schichten unterbesetzt · ' + missing + ' Personen fehlen</span>' : '<span class="pill okp">Mindestbesetzung überall erfüllt</span>') +
       (dbl ? '<span class="pill badp">' + dbl + '× doppelt eingeplant</span>' : '') +
       (conf ? '<span class="pill badp">' + conf + '× trotz Abwesenheit eingeplant</span>' : '') +
       (rest ? '<span class="pill warnp">' + rest + '× Ruhezeit unter 11 h</span>' : '');
@@ -229,7 +211,7 @@
             if (ABSENT.includes(ab)) { lvl = "bad"; flag = ab; why = SHIFTS[ab].label + " eingetragen"; }
             else if (other.length) { lvl = "bad"; flag = "2×"; why = "Auch " + other.map((o) => SHIFTS[o.sh].label + " " + ((pb[o.posId] || {}).short || "")).join(", "); }
             else if (restBad(IDX.code(sid, d - 1), sh) || restBad(sh, IDX.code(sid, d + 1))) { lvl = "warn"; flag = "11h"; why = "Ruhezeit unter 11 Stunden zum Vor- oder Folgetag"; }
-            h += '<div class="pchip ' + lvl + (state.myStaffId && s.id === state.myStaffId ? " mine" : "") + '" title="' + esc(s.name) + (why ? " – " + esc(why) : "") + '"><span class="pn">' + qbadge(s) + esc(s.name) + '</span>' + (flag ? '<span class="flag">' + flag + '</span>' : '') +
+            h += '<div class="pchip ' + lvl + '" title="' + esc(s.name) + (why ? " – " + esc(why) : "") + '"><span class="pn">' + qbadge(s) + esc(s.name) + '</span>' + (flag ? '<span class="flag">' + flag + '</span>' : '') +
               (state.canWrite ? '<button data-rm="' + esc(sid) + '" data-p="' + esc(p.id) + '" data-sh="' + sh + '" data-d="' + d + '" aria-label="' + esc(s.name) + ' entfernen">×</button>' : '') + '</div>';
           });
           if (state.canWrite) h += '<button class="addbtn" data-add data-p="' + esc(p.id) + '" data-sh="' + sh + '" data-d="' + d + '" aria-label="Person eintragen: ' + esc(p.name) + ', ' + SHIFTS[sh].label + ', ' + DAYS_LONG[d] + '">+ Person</button>';
@@ -250,7 +232,7 @@
       if (!g.staff.length) return;
       h += '<tr class="grp"><th class="who">' + esc(g.name) + '</th><th colspan="8"></th></tr>';
       g.staff.forEach((s) => {
-        h += '<tr' + (state.myStaffId && s.id === state.myStaffId ? ' class="mine"' : '') + '><th class="who" scope="row"><span class="nm">' + qbadge(s) + esc(s.name) + '</span><small>' + (QUAL[s.qual] ? esc(QUAL[s.qual].label) + ' · ' : '') + fmtH(s.hours || 0) + ' h/Wo.</small></th>';
+        h += '<tr><th class="who" scope="row"><span class="nm">' + qbadge(s) + esc(s.name) + '</span><small>' + (QUAL[s.qual] ? esc(QUAL[s.qual].label) + ' · ' : '') + fmtH(s.hours || 0) + ' h/Wo.</small></th>';
         for (let d = 0; d < 7; d++) {
           const du = IDX.duties[s.id][d], ab = absence(s.id, d);
           let cls, inner, lbl;
@@ -281,7 +263,7 @@
     if (state.picker) renderPicker();
   }
   function renderPositions() {
-    const ro = state.canAdmin ? "" : " disabled", pos = sortedPositions();
+    const ro = state.canWrite ? "" : " disabled", pos = sortedPositions();
     let h = '<div class="row pos hdr"><span>Bereich</span><span>Kürzel</span><span>F</span><span>S</span><span>N</span><span></span></div>';
     if (!pos.length) h += '<p class="hint" style="padding-top:12px">Noch keine Bereiche angelegt.</p>';
     pos.forEach((p) => {
@@ -290,13 +272,13 @@
         '<input id="pn-' + id + '" data-f="name" value="' + esc(p.name) + '" aria-label="Bereichsname"' + ro + '>' +
         '<input id="ps-' + id + '" data-f="short" maxlength="5" value="' + esc(p.short || "") + '" aria-label="Kürzel"' + ro + '>' +
         DUTY.map((k) => '<input id="p' + k + '-' + id + '" class="n" type="number" min="0" max="20" data-f="soll.' + k + '" value="' + (so[k] || 0) + '" aria-label="Soll ' + SHIFTS[k].label + '"' + ro + '>').join("") +
-        (state.canAdmin ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delpos="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
+        (state.canWrite ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delpos="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
     });
     $("posList").innerHTML = h;
-    $("posForm").hidden = !state.canAdmin;
+    $("posForm").hidden = !state.canWrite;
   }
   function renderStaff() {
-    const ro = state.canAdmin ? "" : " disabled", pos = sortedPositions();
+    const ro = state.canWrite ? "" : " disabled", pos = sortedPositions();
     let h = '<div class="row st hdr"><span>Name</span><span>Qualifikation</span><span>Std./Wo.</span><span></span></div>';
     if (!state.staff.length) h += '<p class="hint" style="padding-top:12px">Noch keine Mitarbeitenden angelegt.</p>';
     state.staff.slice().sort((a, b) => String(a.name).localeCompare(b.name, "de")).forEach((s) => {
@@ -305,10 +287,10 @@
         '<input id="sn-' + id + '" data-f="name" value="' + esc(s.name) + '" aria-label="Name"' + ro + '>' +
         '<select id="sq-' + id + '" data-f="qual" aria-label="Qualifikation"' + ro + '>' + qualOptions(s.qual || "") + '</select>' +
         '<input id="sh-' + id + '" class="n" type="number" min="0" max="60" step="0.5" data-f="hours" value="' + (s.hours || 0) + '" aria-label="Wochenstunden"' + ro + '>' +
-        (state.canAdmin ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delst="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
+        (state.canWrite ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delst="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
     });
     $("stList").innerHTML = h;
-    $("stForm").hidden = !state.canAdmin;
+    $("stForm").hidden = !state.canWrite;
     const qsel = $("stQual"), qcur = qsel.value; qsel.innerHTML = qualOptions(qcur);
     const counts = {}; state.staff.forEach((s) => { if (QUAL[s.qual]) counts[s.qual] = (counts[s.qual] || 0) + 1; });
     $("qLegend").innerHTML = QUALS.map((q) => '<span><span class="qb ' + q.tier + '">' + q.k + '</span>' + q.label + (counts[q.k] ? ' · ' + counts[q.k] : '') + '</span>').join("");
@@ -369,22 +351,21 @@
     state.pending[key] = value;
     renderGrid();
     writeChain = writeChain.then(async () => {
-      try { await adapter.patchWeek(wk, patch); if (wk === weekId()) state.weekExists = true; }
-      catch (e) { showNotice(errText(e), true); if (e && e.status === 403 && e.code === "forbidden") { state.canWrite = false; renderAll(); } if (wk === weekId()) adapter.reloadWeek().catch(() => {}); }
+      try { await adapter.patchWeek(wk, patch, state.weekExists || wk !== weekId()); if (wk === weekId()) state.weekExists = true; }
+      catch (e) { showNotice(errText(e), true); if (e && e.code === "invalid_argument") { state.canWrite = false; renderAll(); } }
       finally { if (state.pending[key] === value) delete state.pending[key]; renderGrid(); }
     });
   }
-  function setSlot(posId, sh, d, ids) { queue("s|" + posId + "|" + sh + "|" + d, ids, { op: "slot", posId, sh, d, ids }); }
-  function setAbsence(sid, d, code) { if (absence(sid, d) === code) return; queue("c|" + sid + "|" + d, code, { op: "cell", sid, d, code }); }
+  function setSlot(posId, sh, d, ids) { queue("s|" + posId + "|" + sh + "|" + d, ids, { slots: { [posId]: { [sh]: { [String(d)]: ids } } } }); }
+  function setAbsence(sid, d, code) { if (absence(sid, d) === code) return; queue("c|" + sid + "|" + d, code, { cells: { [sid]: { [String(d)]: code } } }); }
   function arm(key, btn, run) {
     if (state.armed.has(key)) { state.armed.delete(key); run(); return; }
     state.armed.add(key); btn.classList.add("armed");
     const orig = btn.dataset.orig || btn.textContent; btn.dataset.orig = orig; btn.textContent = key.startsWith("w:") ? "Wirklich? Erneut klicken" : "Sicher?";
     setTimeout(() => { if (state.armed.delete(key)) { btn.classList.remove("armed"); btn.textContent = orig; } }, 4000);
   }
-  const adminFail = (e) => { showNotice(e && e.code === "forbidden" ? "Nicht gespeichert: Bereiche und Mitarbeitende darf nur die Leitung ändern." : errText(e), true); if (e && e.code === "forbidden") { state.canAdmin = false; renderAll(); } };
-  const savePos = (p) => adapter.savePosition(p).catch(adminFail);
-  const saveSt = (s) => adapter.saveStaff(s).catch(adminFail);
+  const savePos = (p) => adapter.savePosition(p).catch((e) => showNotice(errText(e), true));
+  const saveSt = (s) => adapter.saveStaff(s).catch((e) => showNotice(errText(e), true));
 
   // ---------- Ereignisse ----------
   $("viewTabs").addEventListener("click", (e) => {
@@ -433,13 +414,15 @@
   $("copyPrev").addEventListener("click", (e) => arm("w:copy", e.currentTarget, async () => {
     const btn = $("copyPrev"); btn.textContent = "Vorwoche übernehmen"; btn.classList.remove("armed");
     try {
-      await writeChain; await adapter.copyPrev(weekId()); state.weekExists = true;
+      const prev = await adapter.getWeek(weekIdOf(addDays(state.monday, -7)));
+      if (!prev || (!Object.keys(prev.slots || {}).length && !Object.keys(prev.cells || {}).length)) { showNotice("Die Vorwoche ist leer. Es gibt nichts zu übernehmen."); return; }
+      await writeChain; await adapter.setWeek(weekId(), { slots: prev.slots || {}, cells: prev.cells || {} }); state.weekExists = true;
       showNotice("Einteilung aus der Vorwoche übernommen.");
-    } catch (err) { showNotice(errText(err), err.status !== 404); }
+    } catch (err) { showNotice(errText(err), true); }
   }));
   $("clearWeek").addEventListener("click", (e) => arm("w:clear", e.currentTarget, async () => {
     const btn = $("clearWeek"); btn.textContent = "Woche leeren"; btn.classList.remove("armed");
-    try { await writeChain; await adapter.clearWeek(weekId()); state.weekExists = true; showNotice("Woche geleert."); }
+    try { await writeChain; await adapter.setWeek(weekId(), { slots: {}, cells: {} }); state.weekExists = true; showNotice("Woche geleert."); }
     catch (err) { showNotice(errText(err), true); }
   }));
 
@@ -485,8 +468,8 @@
   });
 
   // ---------- PDF-Export ----------
-  const JSPDF_URL = "/vendor/jspdf/jspdf.umd.min.js";
-  const AUTOTABLE_URL = "/vendor/jspdf-autotable/jspdf.plugin.autotable.min.js";
+  const JSPDF_URL = "vendor/jspdf.umd.min.js";
+  const AUTOTABLE_URL = "vendor/jspdf.plugin.autotable.min.js";
   function loadScript(src) { return new Promise((res, rej) => { const el = document.createElement("script"); el.src = src; el.onload = res; el.onerror = () => rej(new Error("load")); document.head.appendChild(el); }); }
   async function pdfLib() {
     if (!(window.jspdf && window.jspdf.jsPDF)) await loadScript(JSPDF_URL);
@@ -574,9 +557,7 @@
     btn.disabled = true; btn.textContent = "PDF wird erstellt …";
     try {
       const { bytes, name } = await buildPdf();
-      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
-      const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+      saveFile(new Blob([bytes], { type: "application/pdf" }), name);
     } catch (e) { showNotice("Das PDF konnte nicht erstellt werden. Bitte lade die Seite neu und versuche es erneut.", true); } finally { btn.disabled = false; btn.textContent = "PDF exportieren"; }
   });
 
@@ -641,162 +622,23 @@
     $("ovBody").innerHTML = h;
   }
   function applyRoute() {
-    const wk = route === "week";
-    $("overview").hidden = route !== "overview"; $("rights").hidden = route !== "rights";
-    $("planPanel").hidden = !wk; $("masterData").hidden = !wk; $("weekNav").hidden = !wk;
-    $("navOverview").setAttribute("aria-selected", route === "overview"); $("navWeek").setAttribute("aria-selected", wk); $("navRights").setAttribute("aria-selected", route === "rights");
-    if (!wk) closePicker();
-    if (route === "overview") renderOverview();
-    if (route === "rights") renderRights();
-  }
-  // ---------- Benutzer & Rechte ----------
-  function renderLastEdit() {
-    const el = $("lastEdit"), m = state.weekMeta;
-    if (!m || !m.at) { el.textContent = ""; return; }
-    el.textContent = "Zuletzt geändert von " + (m.byName || "unbekannt") + " · " + new Date(m.at).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) + " Uhr";
-  }
-  const ACTIONS = {
-    seed: "Start", setup: "Einrichtung", login: "Anmeldung", login_failed: "Anmeldung fehlgeschlagen", password_changed: "Passwort geändert",
-    password_reset: "Passwort zurückgesetzt", user_created: "Konto angelegt", user_updated: "Konto geändert", user_deleted: "Konto gelöscht",
-    position_created: "Bereich angelegt", position_updated: "Bereich geändert", position_deleted: "Bereich gelöscht",
-    staff_created: "Mitarbeitende/r angelegt", staff_updated: "Mitarbeitende/r geändert", staff_deleted: "Mitarbeitende/r entfernt",
-    week_changed: "Plan geändert", week_copied: "Vorwoche übernommen", week_cleared: "Woche geleert"
-  };
-  const ROLE_SELECT = [["reader", "Lesen"], ["planner", "Planung"], ["admin", "Leitung"]];
-  let usersCache = [], rightsToken = 0;
-  async function renderRights() {
-    if (route !== "rights" || !ME) return;
-    const tok = ++rightsToken, role = roleOf(), ms = myStaff();
-    $("rMe").innerHTML = '<span class="av" style="width:48px;height:48px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:var(--accent-ink);font-weight:600;font-size:17px">' + esc(initials(ME.displayName)) + '</span>' +
-      '<div class="who"><b>' + esc(ME.displayName) + '</b><span>Benutzername <code>' + esc(ME.username) + '</code> · Rolle: <span class="role r-' + role + '">' + ROLE_LABEL[role] + '</span>' +
-      (ms ? ' · verknüpft mit „' + esc(ms.name) + '“' : '') + '</span></div>';
-    const rows = [
-      ["Übersicht und Wochenplan ansehen, PDF exportieren", 1, 1, 1],
-      ["Personen in Bereiche einteilen und entfernen", 1, 1, 0],
-      ["Urlaub, Krank, Fortbildung, Frei eintragen", 1, 1, 0],
-      ["Vorwoche übernehmen, Woche leeren", 1, 1, 0],
-      ["Bereiche und Mindestbesetzung pflegen", 1, 0, 0],
-      ["Mitarbeitende anlegen, ändern, entfernen", 1, 0, 0],
-      ["Benutzerkonten und Rollen verwalten, Protokoll ansehen", 1, 0, 0],
-      ["Eigenes Passwort ändern", 1, 1, 1]
-    ];
-    const cols = [["lead", "Leitung"], ["plan", "Planung"], ["read", "Lesen"]];
-    $("rMatrix").innerHTML = '<thead><tr><th>Funktion</th>' + cols.map((c) => '<th class="' + (c[0] === role ? "mine" : "") + '">' + c[1] + (c[0] === role ? '<small>deine Rolle</small>' : '') + '</th>').join("") + '</tr></thead><tbody>' +
-      rows.map((r) => '<tr><td>' + r[0] + '</td>' + [1, 2, 3].map((i) => '<td class="' + (r[i] ? "y" : "n") + (cols[i - 1][0] === role ? " mine" : "") + '">' + (r[i] ? "✓" : "–") + '</td>').join("") + '</tr>').join("") + '</tbody>';
-    $("adminArea").hidden = !state.canAdmin;
-    if (!state.canAdmin) return;
-    $("nuStaff").innerHTML = '<option value="">Keine Verknüpfung</option>' + state.staff.slice().sort((a, b) => String(a.name).localeCompare(b.name, "de")).map((s) => '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>').join("");
-    let users, audit;
-    try { [users, audit] = await Promise.all([api("GET", "/api/users"), api("GET", "/api/audit?limit=150")]); }
-    catch (e) { showNotice(errText(e), true); return; }
-    if (tok !== rightsToken) return;
-    usersCache = users.users;
-    const staffOpts = (cur) => '<option value="">Keine Verknüpfung</option>' + state.staff.slice().sort((a, b) => String(a.name).localeCompare(b.name, "de")).map((s) => '<option value="' + esc(s.id) + '"' + (s.id === cur ? " selected" : "") + '>' + esc(s.name) + '</option>').join("");
-    let h = '<thead><tr><th>Name</th><th>Benutzername</th><th>Rolle</th><th>Mitarbeitende/r</th><th>Aktiv</th><th>Letzte Anmeldung</th><th></th></tr></thead><tbody>';
-    usersCache.forEach((u) => {
-      const id = esc(u.id), self = u.id === ME.id;
-      h += '<tr class="' + (u.active ? "" : "off") + '" data-uid="' + id + '">' +
-        '<td><input type="text" id="un-' + id + '" data-uf="displayName" value="' + esc(u.displayName) + '" aria-label="Name"></td>' +
-        '<td class="un">' + esc(u.username) + (u.mustChange ? '<br><small style="color:var(--warn);font-family:var(--font-body)">Einmalpasswort offen</small>' : '') + '</td>' +
-        '<td><select id="ur-' + id + '" data-uf="role" aria-label="Rolle">' + ROLE_SELECT.map(([v, l]) => '<option value="' + v + '"' + (u.role === v ? " selected" : "") + '>' + l + '</option>').join("") + '</select></td>' +
-        '<td><select id="us-' + id + '" data-uf="staffId" aria-label="Verknüpfte Person">' + staffOpts(u.staffId) + '</select></td>' +
-        '<td><label class="sw"><input type="checkbox" id="ua-' + id + '" data-uf="active"' + (u.active ? " checked" : "") + (self ? " disabled" : "") + '> ' + (u.active ? "aktiv" : "gesperrt") + '</label></td>' +
-        '<td class="num" style="font-size:12px;color:var(--muted)">' + (u.lastLogin ? new Date(u.lastLogin).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : "noch nie") + '</td>' +
-        '<td><div class="acts"><button class="btn" data-ureset="' + id + '">Passwort zurücksetzen</button>' + (self ? '' : '<button class="btn danger" data-udel="' + id + '">Löschen</button>') + '</div></td></tr>';
-    });
-    $("usersTable").innerHTML = h + '</tbody>';
-    $("auditTable").innerHTML = '<thead><tr><th>Zeit</th><th>Wer</th><th>Aktion</th><th>Details</th></tr></thead><tbody>' +
-      audit.entries.map((a) => '<tr><td class="t">' + new Date(a.at).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "medium" }) + '</td><td>' + esc(a.username || "–") + '</td><td>' + esc(ACTIONS[a.action] || a.action) + '</td><td>' + esc(a.detail || "") + '</td></tr>').join("") + '</tbody>';
-  }
-  function showTemp(name, pw) {
-    $("tempBox").innerHTML = '<div class="temp" role="status"><p><b>Einmalpasswort für ' + esc(name) + ':</b></p><code id="tempCode">' + esc(pw) + '</code>' +
-      '<p>Nur jetzt sichtbar. Gib es der Person persönlich weiter. Beim ersten Anmelden legt sie ein eigenes Passwort fest.</p>' +
-      '<div style="display:flex;gap:8px"><button class="btn" id="tempCopy">Kopieren</button><button class="btn" id="tempHide">Ausblenden</button></div></div>';
-    $("tempBox").scrollIntoView({ block: "nearest" });
-  }
-  $("tempBox").addEventListener("click", (e) => {
-    if (e.target.id === "tempHide") $("tempBox").innerHTML = "";
-    if (e.target.id === "tempCopy") {
-      const t = $("tempCode").textContent;
-      const sel = () => { const r = document.createRange(); r.selectNodeContents($("tempCode")); const s2 = getSelection(); s2.removeAllRanges(); s2.addRange(r); };
-      if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => { e.target.textContent = "Kopiert"; }, sel); else sel();
-    }
-  });
-  function formMsg(el, text, ok) { el.textContent = text; el.className = "msg" + (ok ? " ok" : ""); el.hidden = !text; }
-  $("nuForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const body = { displayName: $("nuName").value, username: $("nuUser").value, role: $("nuRole").value, staffId: $("nuStaff").value || null };
-    try {
-      const r = await api("POST", "/api/users", body);
-      formMsg($("nuMsg"), ""); $("nuName").value = ""; $("nuUser").value = "";
-      showTemp(r.user.displayName + " (" + r.user.username + ")", r.tempPassword); renderRights();
-    } catch (err) { formMsg($("nuMsg"), errText(err)); }
-  });
-  $("nuName").addEventListener("input", () => {
-    // Benutzername vorschlagen: "Anna Vogt" → "a.vogt"
-    const u = $("nuUser"); if (u.dataset.touched) return;
-    const parts = $("nuName").value.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/ß/g, "ss").split(/\s+/).filter(Boolean);
-    u.value = parts.length > 1 ? parts[0][0] + "." + parts[parts.length - 1].replace(/[^a-z0-9-]/g, "") : (parts[0] || "").replace(/[^a-z0-9-]/g, "");
-  });
-  $("nuUser").addEventListener("input", () => { $("nuUser").dataset.touched = "1"; });
-  $("usersTable").addEventListener("change", async (e) => {
-    const row = e.target.closest("[data-uid]"), f = e.target.dataset.uf; if (!row || !f) return;
-    const val = f === "active" ? e.target.checked : e.target.value;
-    try { await api("PUT", "/api/users/" + encodeURIComponent(row.dataset.uid), { [f]: f === "staffId" ? (val || null) : val }); showNotice("Konto gespeichert."); }
-    catch (err) { showNotice(errText(err), true); }
-    renderRights();
-  });
-  $("usersTable").addEventListener("click", (e) => {
-    const rs = e.target.closest("[data-ureset]"), dl = e.target.closest("[data-udel]");
-    if (rs) arm("ur:" + rs.dataset.ureset, rs, async () => {
-      const u = usersCache.find((x) => x.id === rs.dataset.ureset);
-      try { const r = await api("POST", "/api/users/" + encodeURIComponent(rs.dataset.ureset) + "/reset-password"); showTemp(u ? u.displayName + " (" + u.username + ")" : "Konto", r.tempPassword); }
-      catch (err) { showNotice(errText(err), true); }
-      renderRights();
-    });
-    if (dl) arm("ud:" + dl.dataset.udel, dl, async () => {
-      try { await api("DELETE", "/api/users/" + encodeURIComponent(dl.dataset.udel)); showNotice("Konto gelöscht."); }
-      catch (err) { showNotice(errText(err), true); }
-      renderRights();
-    });
-  });
-  $("pwForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if ($("pwNew").value !== $("pwNew2").value) return formMsg($("pwMsg"), "Die beiden neuen Passwörter stimmen nicht überein.");
-    try {
-      await api("POST", "/api/me/password", { current: $("pwCur").value, next: $("pwNew").value });
-      ["pwCur", "pwNew", "pwNew2"].forEach((id) => { $(id).value = ""; });
-      formMsg($("pwMsg"), "Passwort geändert. Andere angemeldete Geräte wurden abgemeldet.", true);
-    } catch (err) { formMsg($("pwMsg"), errText(err)); }
-  });
-  async function onUsersChanged() {
-    try {
-      const r = await api("GET", "/api/me"); const before = ME.role;
-      applyMe(r.user);
-      if (before !== r.user.role) { showNotice("Deine Rolle wurde geändert: " + ROLE_LABEL[roleOf()] + "."); renderAll(); }
-      else { renderGrid(); }
-    } catch (e) {}
-    if (route === "rights") renderRights();
-  }
-  function applyMe(user) {
-    ME = user;
-    state.canAdmin = user.role === "admin"; state.canWrite = user.role !== "reader"; state.myStaffId = user.staffId || null;
-    $("meAv").textContent = initials(user.displayName); $("meName").textContent = user.displayName;
-    $("meRole").textContent = ROLE_LABEL[roleOf()]; $("meChip").hidden = false;
+    const ov = route === "overview";
+    $("overview").hidden = !ov; $("planPanel").hidden = ov; $("masterData").hidden = ov; $("dataPanel").hidden = ov; $("weekNav").hidden = ov;
+    $("navOverview").setAttribute("aria-selected", ov); $("navWeek").setAttribute("aria-selected", !ov);
+    if (ov) { closePicker(); renderOverview(); }
   }
   function setHash(name) { if (location.hash.slice(1) !== name) { try { location.hash = name; } catch (e) {} } }
   function openWeek(mon) { route = "week"; applyRoute(); if (weekIdOf(mon) !== weekId() || !unsubWeek) goWeek(mon); else setHash("kw-" + weekId()); }
   function readHash() {
     const h = location.hash.slice(1);
     if (h === "uebersicht") return { route: "overview" };
-    if (h === "rechte") return { route: "rights" };
     const m = /^kw-(\d{4}-W\d{2})$/.exec(h);
     if (m) { const mon = mondayOfWeekId(m[1]); if (mon) return { route: "week", monday: mon }; }
     return null;
   }
   window.addEventListener("hashchange", () => {
     const r = readHash(); if (!r || !adapter) return;
-    if (r.route === "overview" || r.route === "rights") { if (route !== r.route) { route = r.route; applyRoute(); } }
+    if (r.route === "overview") { if (route !== "overview") { route = "overview"; applyRoute(); } }
     else if (route !== "week" || weekIdOf(r.monday) !== weekId()) openWeek(r.monday);
   });
   $("mainNav").addEventListener("click", (e) => {
@@ -806,7 +648,6 @@
       const t = document.querySelector('.wk[data-week="' + weekId() + '"]') || document.querySelector(".wk.cur");
       if (t) t.scrollIntoView({ block: "center" });
     }
-    else if (b.dataset.route === "rights") { route = "rights"; applyRoute(); setHash("rechte"); }
     else openWeek(state.monday);
   });
   $("overview").addEventListener("click", (e) => {
@@ -827,7 +668,6 @@
     unsubWeek = adapter.subWeek(id, (data, meta) => {
       if (id !== weekId()) return;
       state.slots = (data && data.slots) || {}; state.cells = (data && data.cells) || {}; state.weekExists = !!data;
-      state.weekMeta = (data && data.meta) || null; renderLastEdit();
       if (!meta.fromCache) clearLoadTimer();
       renderGrid();
     });
@@ -835,73 +675,48 @@
   let loadTimer = null;
   function clearLoadTimer() { if (!loadTimer) return; clearTimeout(loadTimer); loadTimer = null; const n = $("notice"); if (n.dataset.loading) { n.hidden = true; delete n.dataset.loading; } }
 
-  // ---------- Anmeldung & Start ----------
-  const APP_PARTS = ["overview", "rights", "planPanel", "masterData", "mainNav", "weekNav", "meChip"];
-  const AUTH_PARTS = ["loginView", "setupView", "changeView"];
-  function showAuth(which, msg) {
-    APP_PARTS.forEach((id) => { $(id).hidden = true; });
-    AUTH_PARTS.forEach((id) => { $(id).hidden = id !== which + "View"; });
-    $("modeLine").textContent = "Bitte anmelden";
-    if (which === "login") { if (msg) formMsg($("liMsg"), msg); setTimeout(() => $("liUser").focus(), 0); }
-    if (which === "setup") setTimeout(() => $("suCode").focus(), 0);
-    if (which === "change") { $("cpUserHidden").value = ME ? ME.username : ""; setTimeout(() => $("cpCur").focus(), 0); }
+  // ---------- Datensicherung ----------
+  function saveFile(blob, name) {
+    const url = URL.createObjectURL(blob), a = document.createElement("a");
+    a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
   }
-  $("loginForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const btn = e.submitter || $("loginForm").querySelector("button"); btn.disabled = true;
-    try { const r = await api("POST", "/api/login", { username: $("liUser").value, password: $("liPass").value }); $("liPass").value = ""; formMsg($("liMsg"), ""); onAuthed(r.user); }
-    catch (err) { formMsg($("liMsg"), errText(err)); $("liPass").select(); }
-    finally { btn.disabled = false; }
+  function renderBackupStamp() {
+    const t = adapter && adapter.lastBackup();
+    $("backupStamp").textContent = t ? "Letzte Sicherung: " + new Date(t).toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" }) + " Uhr" : "Noch keine Sicherung heruntergeladen.";
+  }
+  $("backupBtn").addEventListener("click", () => {
+    const d = adapter.exportData();
+    saveFile(new Blob([JSON.stringify(d, null, 1)], { type: "application/json" }), "Dienstplan_ZNA_Sicherung_" + d.exportedAt.slice(0, 10) + ".json");
+    renderBackupStamp();
   });
-  $("setupForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if ($("suPass").value !== $("suPass2").value) return formMsg($("suMsg"), "Die beiden Passwörter stimmen nicht überein.");
-    try { const r = await api("POST", "/api/setup", { code: $("suCode").value, displayName: $("suName").value, username: $("suUser").value, password: $("suPass").value }); onAuthed(r.user); }
-    catch (err) { formMsg($("suMsg"), errText(err)); }
-  });
-  $("changeForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if ($("cpNew").value !== $("cpNew2").value) return formMsg($("cpMsg"), "Die beiden neuen Passwörter stimmen nicht überein.");
-    try { const r = await api("POST", "/api/me/password", { current: $("cpCur").value, next: $("cpNew").value }); ["cpCur", "cpNew", "cpNew2"].forEach((id) => { $(id).value = ""; }); onAuthed(r.user); }
-    catch (err) { formMsg($("cpMsg"), errText(err)); }
-  });
-  $("logoutBtn").addEventListener("click", async () => {
-    try { await api("POST", "/api/logout"); } catch (e) {}
-    location.hash = ""; location.reload();
+  $("restoreBtn").addEventListener("click", (e) => arm("w:restore", e.currentTarget, () => {
+    const btn = $("restoreBtn"); btn.textContent = "Sicherung laden …"; btn.classList.remove("armed");
+    $("restoreFile").click();
+  }));
+  $("restoreFile").addEventListener("change", async () => {
+    const f = $("restoreFile").files[0]; $("restoreFile").value = ""; if (!f) return;
+    try {
+      adapter.importData(JSON.parse(await f.text()));
+      closePicker(); goWeek(state.monday); renderBackupStamp();
+      showNotice("Sicherung vom " + new Date(adapter.lastBackup() || Date.now()).toLocaleDateString("de-DE") + " geladen.");
+    } catch (err) { showNotice("Diese Datei ist keine gültige Dienstplan-Sicherung. Wähle eine Datei, die mit „Sicherung herunterladen“ erstellt wurde.", true); }
   });
 
-  let started = false;
-  function onAuthed(user) {
-    ME = user;
-    if (user.mustChange) return showAuth("change");
-    AUTH_PARTS.forEach((id) => { $(id).hidden = true; });
-    $("mainNav").hidden = false;
-    applyMe(user);
-    if (!started) { started = true; startApp(); } else { renderAll(); applyRoute(); }
-  }
-  async function startApp() {
-    adapter = apiAdapter();
-    $("modeLine").textContent = "Gemeinsamer Plan · Änderungen sind sofort für alle sichtbar";
+  function start() {
+    adapter = localAdapter();
+    $("modeLine").textContent = "Gespeichert in diesem Browser · Sicherung unten auf der Seite";
     adapter.subPositions((list) => { state.positions = list; state.loaded.pos = true; renderGrid(); renderPositions(); renderStaff(); renderOverview(); });
-    adapter.subStaff((list) => { state.staff = list; state.loaded.st = true; renderGrid(); renderStaff(); renderOverview(); if (route === "rights") renderRights(); });
+    adapter.subStaff((list) => { state.staff = list; state.loaded.st = true; renderGrid(); renderStaff(); renderOverview(); });
     adapter.subAllWeeks((all) => { state.allWeeks = all; renderOverview(); });
     const r = readHash();
-    if (r && (r.route === "overview" || r.route === "rights")) route = r.route;
+    if (r && r.route === "overview") route = "overview";
     if (r && r.monday) state.monday = r.monday;
     state.ovYear = isoWeek(state.monday).y;
-    renderChrome(); applyRoute();
-    try { await adapter.start(); } catch (e) { showNotice(errText(e), true); }
+    renderChrome(); applyRoute(); renderBackupStamp();
     goWeek(state.monday);
   }
-  async function boot() {
-    try { const r = await api("GET", "/api/me"); onAuthed(r.user); }
-    catch (e) {
-      if (e.status === 401) return showAuth(e.body && e.body.setupNeeded ? "setup" : "login");
-      showAuth("login", "Der Server ist gerade nicht erreichbar. Bitte lade die Seite gleich neu.");
-    }
-  }
 
-  renderHeader(); renderChrome();
-  APP_PARTS.forEach((id) => { $(id).hidden = true; });
-  boot();
+  renderHeader(); renderChrome(); renderPositions(); renderStaff();
+  start();
 })();
