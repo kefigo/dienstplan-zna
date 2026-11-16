@@ -1,180 +1,90 @@
 # Dienstplan Notaufnahme
 
-Wochendienstplan für die Notaufnahme mit eigener Anmeldung und Rechteverwaltung.
-Läuft auf einem eigenen Server und braucht keine Konten bei externen Diensten.
+Wochendienstplan für die Notaufnahme als reine Website: HTML, CSS und JavaScript. Kein Server, keine Datenbank. Mit PIN-Anmeldung und Rollen.
 
 ## Funktionen
 
-- **Wochenplan nach Bereich:** Lieger A, Lieger B, Lieger C, Springer, Aufnahmestation sowie Aufnahme & Triage, jeweils mit Früh, Spät und Nacht. Personen werden pro Tag eingetragen.
-- **Ansicht nach Person:** Urlaub, Krank, Fortbildung und Frei eintragen, mit Stundenbilanz.
+- **Wochenplan nach Bereich:** Lieger A, Lieger B, Lieger C, Springer, Aufnahmestation sowie Aufnahme & Triage, jeweils mit Früh, Spät und Nacht. Personen werden von Montag bis Sonntag eingetragen.
+- **Reihenfolge der Bereiche** frei festlegen: unter „Bereiche“ mit den Pfeilen ↑ ↓ oder am Computer durch Ziehen am Griff ⠿. Die Reihenfolge gilt für Wochenplan, Auswahl und PDF.
+- **Ansicht nach Person:** Urlaub, Krank, Fortbildung und Frei eintragen, mit Stundenbilanz gegen die Vertragsstunden.
 - **Prüfungen:** Mindestbesetzung je Bereich und Schicht, Doppelbelegungen, Ruhezeit unter 11 Stunden, Einsätze trotz Abwesenheit.
-- **Qualifikationen:** PFK, FWB, PH, SCH, PRA und FSJ als Kürzel im Plan.
-- **Übersicht aller Wochen** eines Jahres mit Besetzungsgrad.
-- **PDF-Export** (A4 quer).
-- **Live-Aktualisierung:** Änderungen erscheinen sofort bei allen, die den Plan geöffnet haben.
-- **Anmeldung** mit Benutzername und Passwort.
-- **Drei Rollen:** Leitung, Planung, Lesen.
-- **Protokoll** aller Anmeldungen und Änderungen.
+- **Qualifikationen** als Kürzel im Plan: PFK, FWB, PH, SCH, PRA, FSJ.
+- **Übersicht aller Kalenderwochen** eines Jahres mit Besetzungsgrad.
+- **Vorwoche übernehmen** und **Woche leeren**.
+- **PDF-Export** (A4 quer, nach Bereich und nach Person).
+- **Sicherung herunterladen** und **Sicherung laden** (JSON-Datei).
+- **Anmeldung mit PIN** und drei Rollen, mit Protokoll aller Änderungen.
 
-## Rollen
+## Anmeldung und Rechte
+
+**Beim ersten Öffnen** legst du den ersten Zugang für die Leitung an: Name und PIN mit 4 bis 8 Ziffern.
+
+**Anmelden:** Namen antippen und die PIN über das Zahlenfeld oder die Tastatur eingeben.
+
+**Rollen:**
 
 | Rolle | Darf |
 |---|---|
-| **Leitung** | alles: Bereiche, Mindestbesetzung, Mitarbeitende, Benutzerkonten, Rollen, Passwörter zurücksetzen, Protokoll ansehen |
-| **Planung** | Personen einteilen, Abwesenheiten eintragen, Vorwoche übernehmen, Woche leeren |
+| **Leitung** | alles: Bereiche, Mindestbesetzung, Mitarbeitende, Zugänge und Rollen, PINs zurücksetzen, Protokoll, Sicherung herunterladen und laden |
+| **Planung** | Personen einteilen, Urlaub/Krank/Fortbildung/Frei eintragen, Vorwoche übernehmen, Woche leeren |
 | **Lesen** | Übersicht und Wochenplan ansehen, PDF exportieren |
 
-Alle können ihr eigenes Passwort ändern. Der Server prüft die Rolle bei jeder Anfrage. Ein Umgehen der Oberfläche hilft also nicht.
+Alle können ihre eigene PIN ändern.
 
-## Voraussetzungen
+**Neue Zugänge** legt die Leitung unter „Benutzer“ an:
 
-- **Node.js 22.13 oder neuer** (getestet mit 22.23). Die Datenbank nutzt das eingebaute `node:sqlite`, es muss nichts kompiliert werden.
-- Etwa 100 MB Speicherplatz.
+- Die Person bekommt eine vorläufige 6-stellige PIN. Beim ersten Anmelden muss sie eine eigene PIN festlegen.
+- Ein Zugang kann mit einem Eintrag unter „Mitarbeitende“ verknüpft werden. Dann sind die eigenen Dienste hervorgehoben.
 
-## Installation und Start
+**Schutzfunktionen:**
 
-```bash
-npm install
-```
+- Nach 5 falschen PINs wird der Zugang für 5 Minuten gesperrt.
+- Nach 15 Minuten ohne Aktivität wird automatisch abgemeldet.
+- Zu leichte PINs wie `1111` oder `1234` werden abgelehnt.
+- Es bleibt immer mindestens ein aktiver Zugang mit der Rolle Leitung bestehen.
 
-```bash
-npm start
-```
+**Protokoll:** Anmeldungen, Fehlversuche und alle Änderungen werden mit Zeit und Name festgehalten. Die Leitung sieht es unter „Benutzer“.
 
-Danach ist die Anwendung unter `http://localhost:3000` erreichbar.
+**Wichtig – was die PIN leistet und was nicht:** Die Website läuft ohne Server komplett im Browser.
 
-### Ersteinrichtung
+- **Schutz:** Die PIN schützt gut vor versehentlichen oder unbefugten Änderungen, zum Beispiel an einem gemeinsam genutzten Stations-PC.
+- **Kein echter Datenschutz:** Wer technisch auf den Speicher dieses Browsers zugreift, kann die Daten trotzdem auslesen. Das geht zum Beispiel über die Entwicklerwerkzeuge oder mit einer Sicherungsdatei.
+- **Speicherung der PINs:** PINs werden nur als gesalzener Hash gespeichert, nie im Klartext.
 
-Beim allerersten Start gibt es noch kein Konto. Der Server zeigt dann in seiner Ausgabe einen **Einrichtungscode** an, zum Beispiel:
+Für echten Zugriffsschutz braucht es einen Server. Die Server-Version mit Benutzername und Passwort liegt im Branch `main`.
 
-```
- Ersteinrichtung: Es gibt noch kein Benutzerkonto.
- Öffne die Anwendung im Browser und gib diesen Einrichtungscode ein:
-   528280-271885
-```
+**PIN der letzten Leitung vergessen:** Dann hilft nur eine Sicherung, deren Leitungs-PIN bekannt ist. Andernfalls musst du die Website-Daten im Browser löschen, dann ist alles weg. Lege deshalb früh einen zweiten Zugang mit der Rolle Leitung an.
 
-So geht es weiter:
+## Benutzen
 
-1. Öffne die Anwendung im Browser.
-2. Gib den Code ein und lege das erste **Leitungskonto** an.
-3. Lege unter **„Benutzer“** die weiteren Konten an. Jedes neue Konto bekommt ein Einmalpasswort.
-4. Gib das Einmalpasswort der Person persönlich weiter. Beim ersten Anmelden muss sie ein eigenes Passwort festlegen (mindestens 10 Zeichen).
+**Direkt öffnen:** `index.html` im Browser öffnen, per Doppelklick oder in den Browser ziehen. Es wird nichts installiert.
 
-Die sechs Bereiche der Notaufnahme sind schon angelegt. Mindestbesetzung und Kürzel lassen sich im Wochenplan unter „Bereiche“ ändern.
+**Auf einen Webspace legen:** Den ganzen Ordner hochladen, also `index.html`, `css/`, `js/`, `fonts/` und `vendor/`. Jeder normale Webspace reicht, auch GitHub Pages.
 
-## Einstellungen (Umgebungsvariablen)
+## Wo die Daten liegen
 
-| Variable | Standard | Bedeutung |
-|---|---|---|
-| `PORT` | `3000` | Port des Servers |
-| `HOST` | `0.0.0.0` | Netzwerkadresse. Mit `127.0.0.1` ist der Server nur lokal erreichbar, zum Beispiel hinter einem Reverse Proxy. |
-| `DATA_DIR` | `./data` | Ordner für die Datenbank `dienstplan.db` |
-| `SESSION_HOURS` | `12` | Wie lange eine Anmeldung ohne Aktivität gültig bleibt |
-| `NODE_ENV` | – | Bei `production` werden Cookies nur über HTTPS gesendet |
-| `COOKIE_SECURE` | – | `1` oder `0` setzt das unabhängig von `NODE_ENV` |
-| `TRUST_PROXY` | – | `1`, wenn ein Reverse Proxy (nginx, Caddy) davor läuft. Dann wird die echte Client-IP für den Schutz gegen Passwort-Ausprobieren genutzt. |
+Alle Daten (Bereiche, Mitarbeitende, Wochen) speichert die Website **im Speicher des Browsers auf diesem Gerät** (`localStorage`). Daraus folgt:
 
-## Betrieb im Klinik-Netz (empfohlen: mit HTTPS)
+- **Andere Geräte sehen die Daten nicht.** Auch andere Browser und andere Personen auf demselben Gerät mit eigenem Benutzerkonto sehen sie nicht.
+- **Daten gehen verloren,** wenn der Browserverlauf beziehungsweise die Website-Daten gelöscht werden. Im privaten Fenster wird gar nichts dauerhaft gespeichert.
+- **Regelmäßig sichern:** Unten im Wochenplan gibt es für die Leitung „Sicherung herunterladen“. Die JSON-Datei enthält alles, auch die Zugänge mit ihren PIN-Hashes und das Protokoll. Bewahre sie geschützt auf.
+- **Auf ein anderes Gerät übertragen oder wiederherstellen:** Dort als Leitung „Sicherung laden …“ wählen und die Datei auswählen. Das ersetzt alle Daten in diesem Browser, auch die Zugänge. Auf einem neuen Gerät legst du dazu zuerst einen beliebigen Leitungszugang an, lädst dann die Sicherung und meldest dich mit den alten Zugängen an.
+- **Mehrere Tabs** im selben Browser bleiben automatisch auf dem gleichen Stand.
 
-Passwörter dürfen nicht unverschlüsselt durchs Netz gehen. Betreibe die Anwendung deshalb hinter einem Reverse Proxy mit HTTPS. Ein Beispiel mit **Caddy**, das Zertifikate automatisch holt:
+Gemeinsames Planen mehrerer Personen gleichzeitig ist damit nicht möglich. Eine Person plant und gibt den Plan als PDF weiter.
 
-```
-dienstplan.klinik.example {
-    reverse_proxy 127.0.0.1:3000
-}
-```
+## Datenschutz
 
-Die Anwendung startest du dann mit diesen Einstellungen:
-
-```bash
-NODE_ENV=production TRUST_PROXY=1 HOST=127.0.0.1 npm start
-```
-
-Für **nginx** brauchst du zusätzlich `proxy_buffering off;` für `/api/events`, sonst funktioniert die Live-Aktualisierung nicht.
-
-### Als Dienst unter Linux (systemd)
-
-```ini
-[Unit]
-Description=Dienstplan Notaufnahme
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/dienstplan-zna
-ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning server.js
-Environment=NODE_ENV=production TRUST_PROXY=1 HOST=127.0.0.1 PORT=3000
-User=dienstplan
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Den Einrichtungscode beim ersten Start findest du dann mit:
-
-```bash
-journalctl -u dienstplan-zna
-```
-
-### Mit Docker
-
-```bash
-docker build -t dienstplan-zna .
-```
-
-```bash
-docker run -d --name dienstplan -p 127.0.0.1:3000:3000 -v dienstplan-daten:/data -e TRUST_PROXY=1 dienstplan-zna
-```
-
-Den Einrichtungscode zeigt dieser Befehl:
-
-```bash
-docker logs dienstplan
-```
-
-## Datensicherung
-
-Alle Daten liegen in einer Datei: `data/dienstplan.db`. Eine Sicherung im laufenden Betrieb erstellst du so:
-
-```bash
-npm run backup
-```
-
-Die Sicherung landet in `data/backups/`. Mit `npm run backup -- /pfad/zum/ordner` wählst du einen anderen Zielordner. Richte das am besten als täglichen Cron-Job ein und kopiere die Sicherungen auf ein anderes Laufwerk.
-
-**Wiederherstellen:** Server stoppen, die Sicherungsdatei als `data/dienstplan.db` zurückkopieren, dann `dienstplan.db-wal` und `dienstplan.db-shm` löschen, falls vorhanden, und den Server wieder starten.
-
-## Passwort vergessen
-
-- **Normale Konten:** Die Leitung setzt das Passwort unter „Benutzer“ zurück und gibt das neue Einmalpasswort weiter.
-- **Notfall, wenn kein Leitungskonto mehr zugänglich ist:** direkt auf dem Server ausführen:
-
-```bash
-npm run reset-password -- benutzername
-```
-
-## Sicherheit und Datenschutz
-
-- **Passwörter** werden nur als scrypt-Hash mit Salt gespeichert, nie im Klartext.
-- **Sitzungen:** zufälliges Token in einem `HttpOnly`- und `SameSite=Strict`-Cookie. In der Datenbank liegt nur ein Hash davon.
-- **Schutz gegen Ausprobieren:** Nach 8 Fehlversuchen wird die Anmeldung für 15 Minuten gesperrt.
-- **Schutz gegen fremde Seiten (CSRF):** Jede Änderung braucht einen eigenen Header, zusätzlich zum `SameSite`-Cookie.
-- **Sicherheits-Header:** Content-Security-Policy erlaubt nur eigene Skripte. Die Seite kann nicht in fremde Seiten eingebettet werden.
-- **Keine externen Abrufe:** Schriften und PDF-Bibliothek liefert der eigene Server aus. Es gibt keine Verbindung zu Google oder CDNs, was für die DSGVO relevant ist.
-- **Deaktivierte oder gelöschte Konten** werden sofort abgemeldet.
-- **Mindestens ein aktives Leitungskonto** bleibt immer bestehen.
-- **Protokoll:** Anmeldungen, Fehlversuche und alle Änderungen am Plan und an den Konten werden mit Zeit und Benutzer festgehalten.
-- **Dienstpläne mit Krankmeldungen sind personenbezogene Daten.** Stimme den Betrieb mit eurer IT und dem Datenschutzbeauftragten ab: Server-Standort, Zugriff, Sicherungen und Löschfristen.
+- Die Website lädt nichts aus dem Internet. Schriften und die PDF-Bibliothek liegen im Ordner selbst. Es gibt keine Verbindung zu Google oder CDNs.
+- Die Daten verlassen den Browser nur, wenn du eine Sicherung oder ein PDF herunterlädst.
+- **Dienstpläne mit Krankmeldungen sind personenbezogene Daten.** Bewahre Sicherungsdateien und PDFs entsprechend geschützt auf.
 
 ## Aufbau
 
 ```
-server.js            Server, API, Rechteprüfung
-db.js                Datenbank-Schema und Startwerte
-auth.js              Passwort-Hashing, Tokens, Einmalpasswörter
-public/index.html    Oberfläche
-public/app.js        Logik der Oberfläche
-public/app.css       Gestaltung
-scripts/backup.js    Datensicherung
-scripts/reset-password.js  Notfall-Passwort
+index.html   Oberfläche
+css/app.css  Gestaltung und Schriften
+js/app.js    Logik, Speicherung, PDF, Sicherung
+fonts/       IBM Plex (SIL Open Font License)
+vendor/      jsPDF und jsPDF-AutoTable (MIT-Lizenz)
 ```
