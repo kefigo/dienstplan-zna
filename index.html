@@ -18,7 +18,9 @@
     <nav class="seg mainnav" id="mainNav" aria-label="Seite">
       <button data-route="overview" id="navOverview">Übersicht</button>
       <button data-route="week" id="navWeek">Wochenplan</button>
+      <button data-route="users" id="navUsers">Benutzer</button>
     </nav>
+    <div class="me" id="meChip" hidden><span class="av" id="meAv" aria-hidden="true"></span><span><b id="meName"></b><small id="meRole"></small></span><button class="lo" id="logoutBtn">Abmelden</button></div>
     <nav class="weeknav" id="weekNav" aria-label="Woche wählen">
       <button class="btn icon" id="prevW" aria-label="Vorherige Woche">‹</button>
       <div class="kw"><b id="kwLabel">KW</b><span id="kwRange" class="num"></span></div>
@@ -31,6 +33,84 @@
 <div class="wrap"><div id="notice" class="notice" hidden></div></div>
 
 <main class="wrap">
+  <section class="panel auth wide" id="loginView" hidden>
+    <span class="eyebrow">Dienstplan Notaufnahme</span>
+    <h2>Anmelden</h2>
+    <div id="liPick">
+      <p style="margin-bottom:12px">Wähle deinen Namen.</p>
+      <input id="liSearch" type="search" placeholder="Name suchen …" aria-label="Name suchen" hidden style="width:100%;margin-bottom:10px;border:1px solid var(--line);border-radius:6px;padding:9px 10px;font-size:15px;background:var(--surface);color:var(--ink)">
+      <div class="who-grid" id="liUsers"></div>
+    </div>
+    <form id="pinForm" hidden autocomplete="off">
+      <div class="pinhead"><span class="av" id="liAv"></span><b id="liName"></b><button type="button" class="linkbtn" id="liBack">Andere Person</button></div>
+      <label style="display:grid;gap:4px;font-size:12px;font-weight:600;color:var(--muted)">PIN<input id="liPin" class="pinfield" type="password" inputmode="numeric" autocomplete="off" maxlength="8"></label>
+      <div class="keypad" id="keypad">
+        <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>
+        <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button>
+        <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button>
+        <button type="button" data-k="del" aria-label="Letzte Ziffer löschen">⌫</button><button type="button" data-k="0">0</button><button type="submit" class="ok">Anmelden</button>
+      </div>
+      <p class="msg" id="liMsg" hidden></p>
+    </form>
+  </section>
+
+  <section class="panel auth" id="setupView" hidden>
+    <span class="eyebrow">Ersteinrichtung</span>
+    <h2>Zugang für die Leitung anlegen</h2>
+    <p>Es gibt noch keinen Zugang. Lege jetzt den ersten an. Diese Person bekommt die Rolle Leitung und kann danach weitere Zugänge vergeben.</p>
+    <form id="setupForm" autocomplete="off">
+      <label>Dein Name<input id="suName" required placeholder="z. B. Maria Schneider"></label>
+      <label>PIN (4–8 Ziffern)<input id="suPin" class="pinfield" type="password" inputmode="numeric" maxlength="8" required></label>
+      <label>PIN wiederholen<input id="suPin2" class="pinfield" type="password" inputmode="numeric" maxlength="8" required></label>
+      <p class="msg" id="suMsg" hidden></p>
+      <button class="btn primary" type="submit">Zugang anlegen</button>
+    </form>
+  </section>
+
+  <section class="panel auth" id="changeView" hidden>
+    <span class="eyebrow">Erste Anmeldung</span>
+    <h2>Eigene PIN festlegen</h2>
+    <p>Du hast dich mit einer vorläufigen PIN angemeldet. Lege jetzt eine eigene PIN fest, die nur du kennst.</p>
+    <form id="changeForm" autocomplete="off">
+      <label>Neue PIN (4–8 Ziffern)<input id="cpPin" class="pinfield" type="password" inputmode="numeric" maxlength="8" required></label>
+      <label>Neue PIN wiederholen<input id="cpPin2" class="pinfield" type="password" inputmode="numeric" maxlength="8" required></label>
+      <p class="msg" id="cpMsg" hidden></p>
+      <button class="btn primary" type="submit">PIN speichern</button>
+    </form>
+  </section>
+
+  <section class="panel" id="usersView" aria-labelledby="uH" hidden>
+    <div class="panel-head"><h2 id="uH">Benutzer &amp; Rechte</h2><span class="sub">Zugänge, Rollen und PINs</span></div>
+    <div class="rme" id="rMe"></div>
+    <h3 class="subhead">Meine PIN ändern</h3>
+    <form class="form cols" id="pwForm" autocomplete="off">
+      <label>Aktuelle PIN<input id="pwCur" class="pinfield" type="password" inputmode="numeric" maxlength="8" required></label>
+      <label>Neue PIN<input id="pwNew" class="pinfield" type="password" inputmode="numeric" maxlength="8" required></label>
+      <label>Wiederholen<input id="pwNew2" class="pinfield" type="password" inputmode="numeric" maxlength="8" required></label>
+      <button class="btn" type="submit">PIN ändern</button>
+      <p class="msg" id="pwMsg" hidden></p>
+    </form>
+    <h3 class="subhead">Was welche Rolle darf</h3>
+    <div class="scroll"><table class="matrix" id="rMatrix"></table></div>
+    <div id="adminArea" hidden>
+      <h3 class="subhead">Zugänge</h3>
+      <p class="help">Neue Zugänge bekommen eine vorläufige PIN. Gib sie der Person persönlich weiter. Beim ersten Anmelden legt sie eine eigene PIN fest. Die Verknüpfung mit einem Mitarbeitenden-Eintrag hebt die eigenen Dienste hervor.</p>
+      <form class="form cols" id="nuForm" autocomplete="off">
+        <label>Name<input id="nuName" required placeholder="Vor- und Nachname"></label>
+        <label>Rolle<select id="nuRole"><option value="reader">Lesen</option><option value="planner">Planung</option><option value="admin">Leitung</option></select></label>
+        <label>Mitarbeitende/r<select id="nuStaff"></select></label>
+        <button class="btn primary" type="submit">Zugang anlegen</button>
+        <p class="msg" id="nuMsg" hidden></p>
+      </form>
+      <div id="tempBox"></div>
+      <div class="scroll"><table class="users" id="usersTable"></table></div>
+      <h3 class="subhead">Protokoll</h3>
+      <p class="help">Die letzten Anmeldungen und Änderungen in diesem Browser, neueste zuerst.</p>
+      <div class="scroll"><table class="audit" id="auditTable"></table></div>
+    </div>
+    <p class="secnote">Hinweis: Die PIN schützt vor versehentlichen und unbefugten Änderungen an diesem Gerät. Weil die Website ohne Server im Browser läuft, ist das kein Schutz gegen jemanden, der technisch auf den Speicher dieses Browsers zugreift. Gib Sicherungsdateien nicht weiter, sie enthalten alle Daten.</p>
+  </section>
+
   <section class="panel" id="overview" aria-labelledby="ovH" hidden>
     <div class="panel-head">
       <h2 id="ovH">Alle Wochen</h2>
@@ -44,6 +124,7 @@
   <section class="panel" id="planPanel" aria-labelledby="planH">
     <div class="panel-head">
       <h2 id="planH">Wochenplan</h2>
+      <span class="lastedit" id="lastEdit"></span>
       <div class="seg" id="viewTabs" role="tablist" aria-label="Ansicht">
         <button role="tab" id="tabAreas" data-view="areas">Nach Bereich</button>
         <button role="tab" id="tabPeople" data-view="people">Nach Person</button>
@@ -89,7 +170,7 @@
     </section>
   </div>
   <section class="panel" id="dataPanel" aria-labelledby="dataH">
-    <div class="panel-head"><h2 id="dataH">Daten sichern</h2><span class="sub">Alles wird nur in diesem Browser gespeichert</span></div>
+    <div class="panel-head"><h2 id="dataH">Daten sichern</h2><span class="sub">Nur für die Leitung · alles wird nur in diesem Browser gespeichert</span></div>
     <div class="datapanel">
       <p>Der Dienstplan speichert Bereiche, Mitarbeitende und alle Wochen im Speicher dieses Browsers auf diesem Gerät. Andere Geräte oder Browser sehen diese Daten nicht. Lade regelmäßig eine Sicherung herunter. Mit derselben Datei kannst du den Plan auf einem anderen Gerät öffnen oder nach dem Löschen des Browserverlaufs wiederherstellen.</p>
       <div class="acts">

@@ -53,9 +53,64 @@
   const state = {
     allWeeks: {}, ovYear: isoWeek(mondayOf(new Date())).y,
     monday: mondayOf(new Date()), positions: [], staff: [], slots: {}, cells: {}, weekExists: false,
-    pending: {}, brush: "U", canWrite: true, loaded: { pos: false, st: false }, armed: new Set(), picker: null
+    pending: {}, brush: "U", canWrite: false, canAdmin: false, myStaffId: null, weekMeta: null, loaded: { pos: false, st: false }, armed: new Set(), picker: null
   };
   let adapter = null, unsubWeek = null, writeChain = Promise.resolve(), IDX = null;
+
+  // ---------- PIN & Rollen ----------
+  let ME = null;
+  const ROLE_LABEL = { admin: "Leitung", planner: "Planung", reader: "Lesen" };
+  const ROLE_CLS = { admin: "lead", planner: "plan", reader: "read" };
+  const initials = (n) => String(n || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  // SHA-256 in reinem JavaScript (funktioniert auch ohne HTTPS und beim Öffnen als Datei)
+  const K256 = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+  function sha256(bytes) {
+    const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    const l = bytes.length, n = ((l + 9 + 63) >> 6) << 6, m = new Uint8Array(n);
+    m.set(bytes); m[l] = 0x80;
+    const dv = new DataView(m.buffer); dv.setUint32(n - 4, (l * 8) >>> 0); dv.setUint32(n - 8, Math.floor(l / 0x20000000));
+    const W = new Array(64);
+    for (let i = 0; i < n; i += 64) {
+      for (let t = 0; t < 16; t++) W[t] = dv.getUint32(i + t * 4);
+      for (let t = 16; t < 64; t++) {
+        const x = W[t - 15], y = W[t - 2];
+        const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3), s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+        W[t] = (W[t - 16] + s0 + W[t - 7] + s1) >>> 0;
+      }
+      let [a, b, c, d, e, f, g, h] = H;
+      for (let t = 0; t < 64; t++) {
+        const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7)), ch = (e & f) ^ (~e & g);
+        const t1 = (h + S1 + ch + K256[t] + W[t]) >>> 0;
+        const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10)), mj = (a & b) ^ (a & c) ^ (b & c);
+        h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + ((S0 + mj) >>> 0)) >>> 0;
+      }
+      H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0; H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+    }
+    const out = new Uint8Array(32), ov = new DataView(out.buffer); H.forEach((v, i) => ov.setUint32(i * 4, v)); return out;
+  }
+  const utf8 = (str) => new TextEncoder().encode(str);
+  const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  const PIN_ITER = 20000;
+  function pinHash(pin, salt, iter) {
+    const sb = utf8(salt); let k = sha256(utf8(salt + "|" + pin));
+    const buf = new Uint8Array(32 + sb.length); buf.set(sb, 32);
+    for (let i = 0; i < iter; i++) { buf.set(k, 0); k = sha256(buf); }
+    return hex(k);
+  }
+  function makePin(pin) { const r = new Uint8Array(16); crypto.getRandomValues(r); const salt = hex(r); return { pinSalt: salt, pinIter: PIN_ITER, pinHash: pinHash(pin, salt, PIN_ITER) }; }
+  const checkPin = (u, pin) => !!u && !!u.pinHash && pinHash(pin, u.pinSalt, u.pinIter || PIN_ITER) === u.pinHash;
+  function pinProblem(pin) {
+    if (!/^\d{4,8}$/.test(pin)) return "Die PIN muss aus 4 bis 8 Ziffern bestehen.";
+    if (/^(\d)\1+$/.test(pin)) return "Bitte keine PIN aus lauter gleichen Ziffern.";
+    if ("0123456789".includes(pin) || "9876543210".includes(pin)) return "Bitte keine aufsteigende oder absteigende Zahlenfolge.";
+    return null;
+  }
+  function tempPin() { const r = new Uint32Array(1); let p; do { crypto.getRandomValues(r); p = String(r[0] % 1000000).padStart(6, "0"); } while (pinProblem(p)); return p; }
+  function logAudit(action, detail) { if (adapter) adapter.log({ at: new Date().toISOString(), by: ME ? ME.name : "", action, detail: detail ? String(detail).slice(0, 300) : "" }); }
+  const myStaff = () => state.myStaffId ? state.staff.find((s) => s.id === state.myStaffId) : null;
 
   // ---------- Speicher ----------
   function deepMerge(t, p) { for (const k in p) { const v = p[k]; if (v && typeof v === "object" && !Array.isArray(v)) { if (!t[k] || typeof t[k] !== "object" || Array.isArray(t[k])) t[k] = {}; deepMerge(t[k], v); } else t[k] = v; } return t; }
@@ -73,9 +128,10 @@
     let data = null, storageOk = true;
     const read = () => { try { const raw = localStorage.getItem(STORE_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { storageOk = false; return null; } };
     data = read();
-    if (!data) { data = { positions: clone(DEFAULT_POSITIONS), staff: {}, weeks: {}, savedAt: null, backupAt: null }; persist(); }
-    ["positions", "staff", "weeks"].forEach((k) => { if (!data[k] || typeof data[k] !== "object") data[k] = {}; });
-    const subs = { positions: [], staff: [], weeks: [], all: [] }, meta = { fromCache: false };
+    if (!data) { data = { positions: clone(DEFAULT_POSITIONS), staff: {}, weeks: {}, users: {}, audit: [], savedAt: null, backupAt: null }; persist(); }
+    const fix = () => { ["positions", "staff", "weeks", "users"].forEach((k) => { if (!data[k] || typeof data[k] !== "object") data[k] = {}; }); if (!Array.isArray(data.audit)) data.audit = []; };
+    fix();
+    const subs = { positions: [], staff: [], weeks: [], all: [], users: [] }, meta = { fromCache: false };
     function persist() {
       data.savedAt = new Date().toISOString();
       try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); storageOk = true; }
@@ -83,12 +139,13 @@
     }
     const emitOnly = (kind) => {
       if (kind === "weeks") { subs.all.forEach((cb) => cb(clone(data.weeks))); subs.weeks.forEach((s) => s.cb(data.weeks[s.id] ? clone(data.weeks[s.id]) : null, meta)); }
+      else if (kind === "users") subs.users.forEach((cb) => cb());
       else subs[kind].forEach((cb) => cb(Object.entries(data[kind]).map(([id, v]) => Object.assign({ id }, v)), meta));
     };
     const emit = (kind) => { persist(); emitOnly(kind); };
-    const emitAll = () => ["positions", "staff", "weeks"].forEach(emitOnly);
+    const emitAll = () => ["positions", "staff", "weeks", "users"].forEach(emitOnly);
     // Gleicher Browser, anderer Tab: Änderungen übernehmen
-    window.addEventListener("storage", (e) => { if (e.key === STORE_KEY && e.newValue) { try { data = JSON.parse(e.newValue); emitAll(); } catch (err) {} } });
+    window.addEventListener("storage", (e) => { if (e.key === STORE_KEY && e.newValue) { try { data = JSON.parse(e.newValue); fix(); emitAll(); } catch (err) {} } });
     const sub = (kind) => (cb) => { subs[kind].push(cb); setTimeout(() => emitOnly(kind)); return () => { subs[kind] = subs[kind].filter((x) => x !== cb); }; };
     return {
       storageOk: () => storageOk,
@@ -102,12 +159,21 @@
       patchWeek: async (wk, patch) => { deepMerge(data.weeks[wk] || (data.weeks[wk] = {}), clone(patch)); emit("weeks"); },
       getWeek: async (wk) => data.weeks[wk] ? clone(data.weeks[wk]) : null,
       setWeek: async (wk, v) => { data.weeks[wk] = clone(v); emit("weeks"); },
-      exportData: () => { data.backupAt = new Date().toISOString(); persist(); return { app: "dienstplan-zna", version: 1, exportedAt: data.backupAt, positions: data.positions, staff: data.staff, weeks: data.weeks }; },
+      exportData: () => { data.backupAt = new Date().toISOString(); persist(); return { app: "dienstplan-zna", version: 2, exportedAt: data.backupAt, positions: data.positions, staff: data.staff, weeks: data.weeks, users: data.users, audit: data.audit }; },
       importData: (obj) => {
         if (!obj || obj.app !== "dienstplan-zna" || typeof obj.positions !== "object" || typeof obj.staff !== "object" || typeof obj.weeks !== "object") throw new Error("format");
-        data = { positions: obj.positions || {}, staff: obj.staff || {}, weeks: obj.weeks || {}, savedAt: null, backupAt: obj.exportedAt || null };
-        persist(); emitAll();
+        // Sicherungen ohne Zugänge (ältere Version) behalten die vorhandenen Zugänge
+        const hasUsers = obj.users && typeof obj.users === "object" && Object.keys(obj.users).length;
+        data = { positions: obj.positions || {}, staff: obj.staff || {}, weeks: obj.weeks || {}, users: hasUsers ? obj.users : data.users, audit: Array.isArray(obj.audit) ? obj.audit : data.audit, savedAt: null, backupAt: obj.exportedAt || null };
+        fix(); persist(); emitAll();
       },
+      subUsers: (cb) => { subs.users.push(cb); },
+      users: () => Object.entries(data.users).map(([id, v]) => Object.assign({ id }, v)),
+      getUser: (id) => data.users[id] ? Object.assign({ id }, data.users[id]) : null,
+      saveUser: (u) => { const { id, ...r } = u; data.users[id] = r; emit("users"); },
+      deleteUser: (id) => { delete data.users[id]; emit("users"); },
+      log: (entry) => { data.audit.unshift(entry); if (data.audit.length > 500) data.audit.length = 500; persist(); },
+      audit: () => data.audit.slice(),
       lastBackup: () => data.backupAt
     };
   }
@@ -184,7 +250,13 @@
       if (du.length && ABSENT.includes(absence(s.id, d))) conf++;
       if (d > 0 && du.length && restBad(IDX.code(s.id, d - 1), du[0].sh)) rest++;
     } });
-    sum.innerHTML = (under ? '<span class="pill badp">' + under + ' Schichten unterbesetzt · ' + missing + ' Personen fehlen</span>' : '<span class="pill okp">Mindestbesetzung überall erfüllt</span>') +
+    const ms = myStaff(); let mine = "";
+    if (ms && IDX.duties[ms.id]) {
+      const pb = posById(), parts = [];
+      for (let d = 0; d < 7; d++) IDX.duties[ms.id][d].forEach((x) => parts.push(DAYS[d] + " " + x.sh + " " + ((pb[x.posId] || {}).short || "")));
+      mine = '<span class="pill mep">' + (parts.length ? "Deine Dienste: " + esc(parts.join(" · ")) : "Du hast diese Woche keine Dienste") + '</span>';
+    }
+    sum.innerHTML = mine + (under ? '<span class="pill badp">' + under + ' Schichten unterbesetzt · ' + missing + ' Personen fehlen</span>' : '<span class="pill okp">Mindestbesetzung überall erfüllt</span>') +
       (dbl ? '<span class="pill badp">' + dbl + '× doppelt eingeplant</span>' : '') +
       (conf ? '<span class="pill badp">' + conf + '× trotz Abwesenheit eingeplant</span>' : '') +
       (rest ? '<span class="pill warnp">' + rest + '× Ruhezeit unter 11 h</span>' : '');
@@ -211,7 +283,7 @@
             if (ABSENT.includes(ab)) { lvl = "bad"; flag = ab; why = SHIFTS[ab].label + " eingetragen"; }
             else if (other.length) { lvl = "bad"; flag = "2×"; why = "Auch " + other.map((o) => SHIFTS[o.sh].label + " " + ((pb[o.posId] || {}).short || "")).join(", "); }
             else if (restBad(IDX.code(sid, d - 1), sh) || restBad(sh, IDX.code(sid, d + 1))) { lvl = "warn"; flag = "11h"; why = "Ruhezeit unter 11 Stunden zum Vor- oder Folgetag"; }
-            h += '<div class="pchip ' + lvl + '" title="' + esc(s.name) + (why ? " – " + esc(why) : "") + '"><span class="pn">' + qbadge(s) + esc(s.name) + '</span>' + (flag ? '<span class="flag">' + flag + '</span>' : '') +
+            h += '<div class="pchip ' + lvl + (state.myStaffId && s.id === state.myStaffId ? " mine" : "") + '" title="' + esc(s.name) + (why ? " – " + esc(why) : "") + '"><span class="pn">' + qbadge(s) + esc(s.name) + '</span>' + (flag ? '<span class="flag">' + flag + '</span>' : '') +
               (state.canWrite ? '<button data-rm="' + esc(sid) + '" data-p="' + esc(p.id) + '" data-sh="' + sh + '" data-d="' + d + '" aria-label="' + esc(s.name) + ' entfernen">×</button>' : '') + '</div>';
           });
           if (state.canWrite) h += '<button class="addbtn" data-add data-p="' + esc(p.id) + '" data-sh="' + sh + '" data-d="' + d + '" aria-label="Person eintragen: ' + esc(p.name) + ', ' + SHIFTS[sh].label + ', ' + DAYS_LONG[d] + '">+ Person</button>';
@@ -232,7 +304,7 @@
       if (!g.staff.length) return;
       h += '<tr class="grp"><th class="who">' + esc(g.name) + '</th><th colspan="8"></th></tr>';
       g.staff.forEach((s) => {
-        h += '<tr><th class="who" scope="row"><span class="nm">' + qbadge(s) + esc(s.name) + '</span><small>' + (QUAL[s.qual] ? esc(QUAL[s.qual].label) + ' · ' : '') + fmtH(s.hours || 0) + ' h/Wo.</small></th>';
+        h += '<tr' + (state.myStaffId && s.id === state.myStaffId ? ' class="mine"' : '') + '><th class="who" scope="row"><span class="nm">' + qbadge(s) + esc(s.name) + '</span><small>' + (QUAL[s.qual] ? esc(QUAL[s.qual].label) + ' · ' : '') + fmtH(s.hours || 0) + ' h/Wo.</small></th>';
         for (let d = 0; d < 7; d++) {
           const du = IDX.duties[s.id][d], ab = absence(s.id, d);
           let cls, inner, lbl;
@@ -263,7 +335,7 @@
     if (state.picker) renderPicker();
   }
   function renderPositions() {
-    const ro = state.canWrite ? "" : " disabled", pos = sortedPositions();
+    const ro = state.canAdmin ? "" : " disabled", pos = sortedPositions();
     let h = '<div class="row pos hdr"><span>Bereich</span><span>Kürzel</span><span>F</span><span>S</span><span>N</span><span></span></div>';
     if (!pos.length) h += '<p class="hint" style="padding-top:12px">Noch keine Bereiche angelegt.</p>';
     pos.forEach((p) => {
@@ -272,13 +344,13 @@
         '<input id="pn-' + id + '" data-f="name" value="' + esc(p.name) + '" aria-label="Bereichsname"' + ro + '>' +
         '<input id="ps-' + id + '" data-f="short" maxlength="5" value="' + esc(p.short || "") + '" aria-label="Kürzel"' + ro + '>' +
         DUTY.map((k) => '<input id="p' + k + '-' + id + '" class="n" type="number" min="0" max="20" data-f="soll.' + k + '" value="' + (so[k] || 0) + '" aria-label="Soll ' + SHIFTS[k].label + '"' + ro + '>').join("") +
-        (state.canWrite ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delpos="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
+        (state.canAdmin ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delpos="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
     });
     $("posList").innerHTML = h;
-    $("posForm").hidden = !state.canWrite;
+    $("posForm").hidden = !state.canAdmin;
   }
   function renderStaff() {
-    const ro = state.canWrite ? "" : " disabled", pos = sortedPositions();
+    const ro = state.canAdmin ? "" : " disabled", pos = sortedPositions();
     let h = '<div class="row st hdr"><span>Name</span><span>Qualifikation</span><span>Std./Wo.</span><span></span></div>';
     if (!state.staff.length) h += '<p class="hint" style="padding-top:12px">Noch keine Mitarbeitenden angelegt.</p>';
     state.staff.slice().sort((a, b) => String(a.name).localeCompare(b.name, "de")).forEach((s) => {
@@ -287,10 +359,10 @@
         '<input id="sn-' + id + '" data-f="name" value="' + esc(s.name) + '" aria-label="Name"' + ro + '>' +
         '<select id="sq-' + id + '" data-f="qual" aria-label="Qualifikation"' + ro + '>' + qualOptions(s.qual || "") + '</select>' +
         '<input id="sh-' + id + '" class="n" type="number" min="0" max="60" step="0.5" data-f="hours" value="' + (s.hours || 0) + '" aria-label="Wochenstunden"' + ro + '>' +
-        (state.canWrite ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delst="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
+        (state.canAdmin ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delst="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
     });
     $("stList").innerHTML = h;
-    $("stForm").hidden = !state.canWrite;
+    $("stForm").hidden = !state.canAdmin;
     const qsel = $("stQual"), qcur = qsel.value; qsel.innerHTML = qualOptions(qcur);
     const counts = {}; state.staff.forEach((s) => { if (QUAL[s.qual]) counts[s.qual] = (counts[s.qual] || 0) + 1; });
     $("qLegend").innerHTML = QUALS.map((q) => '<span><span class="qb ' + q.tier + '">' + q.k + '</span>' + q.label + (counts[q.k] ? ' · ' + counts[q.k] : '') + '</span>').join("");
@@ -351,21 +423,34 @@
     state.pending[key] = value;
     renderGrid();
     writeChain = writeChain.then(async () => {
-      try { await adapter.patchWeek(wk, patch, state.weekExists || wk !== weekId()); if (wk === weekId()) state.weekExists = true; }
-      catch (e) { showNotice(errText(e), true); if (e && e.code === "invalid_argument") { state.canWrite = false; renderAll(); } }
+      try { await adapter.patchWeek(wk, Object.assign({}, patch, { meta: { by: ME ? ME.name : "", at: new Date().toISOString() } })); if (wk === weekId()) state.weekExists = true; }
+      catch (e) { showNotice(errText(e), true); }
       finally { if (state.pending[key] === value) delete state.pending[key]; renderGrid(); }
     });
   }
-  function setSlot(posId, sh, d, ids) { queue("s|" + posId + "|" + sh + "|" + d, ids, { slots: { [posId]: { [sh]: { [String(d)]: ids } } } }); }
-  function setAbsence(sid, d, code) { if (absence(sid, d) === code) return; queue("c|" + sid + "|" + d, code, { cells: { [sid]: { [String(d)]: code } } }); }
+  function setSlot(posId, sh, d, ids) {
+    const p = posById()[posId] || {}, by = staffById();
+    logAudit("week_changed", weekId() + " · " + (p.name || "") + " · " + SHIFTS[sh].label + " · " + DAYS[d] + ": " + (ids.map((x) => (by[x] || {}).name).filter(Boolean).join(", ") || "niemand"));
+    queue("s|" + posId + "|" + sh + "|" + d, ids, { slots: { [posId]: { [sh]: { [String(d)]: ids } } } }); }
+  function setAbsence(sid, d, code) {
+    if (absence(sid, d) === code) return;
+    logAudit("week_changed", weekId() + " · " + ((staffById()[sid] || {}).name || "") + " · " + DAYS[d] + ": " + (SHIFTS[code] ? SHIFTS[code].label : "Eintrag gelöscht"));
+    queue("c|" + sid + "|" + d, code, { cells: { [sid]: { [String(d)]: code } } }); }
   function arm(key, btn, run) {
     if (state.armed.has(key)) { state.armed.delete(key); run(); return; }
     state.armed.add(key); btn.classList.add("armed");
     const orig = btn.dataset.orig || btn.textContent; btn.dataset.orig = orig; btn.textContent = key.startsWith("w:") ? "Wirklich? Erneut klicken" : "Sicher?";
     setTimeout(() => { if (state.armed.delete(key)) { btn.classList.remove("armed"); btn.textContent = orig; } }, 4000);
   }
-  const savePos = (p) => adapter.savePosition(p).catch((e) => showNotice(errText(e), true));
-  const saveSt = (s) => adapter.saveStaff(s).catch((e) => showNotice(errText(e), true));
+  const savePos = (p) => {
+    logAudit(state.positions.some((x) => x.id === p.id) ? "position_updated" : "position_created", p.name + " (" + p.short + ") Soll " + ((p.soll || {}).F || 0) + "/" + ((p.soll || {}).S || 0) + "/" + ((p.soll || {}).N || 0));
+    return adapter.savePosition(p).catch((e) => showNotice(errText(e), true));
+  };
+  const saveSt = (s) => {
+    logAudit(state.staff.some((x) => x.id === s.id) ? "staff_updated" : "staff_created", s.name + (s.qual ? " (" + s.qual + ")" : "") + ", " + fmtH(s.hours || 0) + " h");
+    return adapter.saveStaff(s).catch((e) => showNotice(errText(e), true));
+  };
+  const weekStamp = () => ({ meta: { by: ME ? ME.name : "", at: new Date().toISOString() } });
 
   // ---------- Ereignisse ----------
   $("viewTabs").addEventListener("click", (e) => {
@@ -416,13 +501,13 @@
     try {
       const prev = await adapter.getWeek(weekIdOf(addDays(state.monday, -7)));
       if (!prev || (!Object.keys(prev.slots || {}).length && !Object.keys(prev.cells || {}).length)) { showNotice("Die Vorwoche ist leer. Es gibt nichts zu übernehmen."); return; }
-      await writeChain; await adapter.setWeek(weekId(), { slots: prev.slots || {}, cells: prev.cells || {} }); state.weekExists = true;
+      await writeChain; await adapter.setWeek(weekId(), Object.assign({ slots: prev.slots || {}, cells: prev.cells || {} }, weekStamp())); state.weekExists = true; logAudit("week_copied", weekIdOf(addDays(state.monday, -7)) + " → " + weekId());
       showNotice("Einteilung aus der Vorwoche übernommen.");
     } catch (err) { showNotice(errText(err), true); }
   }));
   $("clearWeek").addEventListener("click", (e) => arm("w:clear", e.currentTarget, async () => {
     const btn = $("clearWeek"); btn.textContent = "Woche leeren"; btn.classList.remove("armed");
-    try { await writeChain; await adapter.setWeek(weekId(), { slots: {}, cells: {} }); state.weekExists = true; showNotice("Woche geleert."); }
+    try { await writeChain; await adapter.setWeek(weekId(), Object.assign({ slots: {}, cells: {} }, weekStamp())); state.weekExists = true; logAudit("week_cleared", weekId()); showNotice("Woche geleert."); }
     catch (err) { showNotice(errText(err), true); }
   }));
 
@@ -446,7 +531,7 @@
   $("posList").addEventListener("click", (e) => {
     const b = e.target.closest("[data-delpos]"); if (!b) return;
     const id = b.dataset.delpos;
-    arm("p:" + id, b, () => adapter.deletePosition(id).catch((err) => showNotice(errText(err), true)));
+    arm("p:" + id, b, () => { logAudit("position_deleted", (posById()[id] || {}).name || id); adapter.deletePosition(id).catch((err) => showNotice(errText(err), true)); });
   });
   $("stForm").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -464,7 +549,11 @@
   });
   $("stList").addEventListener("click", (e) => {
     const b = e.target.closest("[data-delst]"); if (!b) return;
-    arm("s:" + b.dataset.delst, b, () => adapter.deleteStaff(b.dataset.delst).catch((err) => showNotice(errText(err), true)));
+    arm("s:" + b.dataset.delst, b, () => {
+      const id = b.dataset.delst; logAudit("staff_deleted", (staffById()[id] || {}).name || id);
+      adapter.users().filter((u) => u.staffId === id).forEach((u) => adapter.saveUser(Object.assign({}, u, { staffId: "" })));
+      adapter.deleteStaff(id).catch((err) => showNotice(errText(err), true));
+    });
   });
 
   // ---------- PDF-Export ----------
@@ -622,23 +711,28 @@
     $("ovBody").innerHTML = h;
   }
   function applyRoute() {
-    const ov = route === "overview";
-    $("overview").hidden = !ov; $("planPanel").hidden = ov; $("masterData").hidden = ov; $("dataPanel").hidden = ov; $("weekNav").hidden = ov;
-    $("navOverview").setAttribute("aria-selected", ov); $("navWeek").setAttribute("aria-selected", !ov);
-    if (ov) { closePicker(); renderOverview(); }
+    if (!ME) return;
+    const wk = route === "week";
+    $("overview").hidden = route !== "overview"; $("usersView").hidden = route !== "users";
+    $("planPanel").hidden = !wk; $("masterData").hidden = !wk; $("dataPanel").hidden = !wk || !state.canAdmin; $("weekNav").hidden = !wk;
+    $("navOverview").setAttribute("aria-selected", route === "overview"); $("navWeek").setAttribute("aria-selected", wk); $("navUsers").setAttribute("aria-selected", route === "users");
+    if (!wk) closePicker();
+    if (route === "overview") renderOverview();
+    if (route === "users") renderUsers();
   }
   function setHash(name) { if (location.hash.slice(1) !== name) { try { location.hash = name; } catch (e) {} } }
   function openWeek(mon) { route = "week"; applyRoute(); if (weekIdOf(mon) !== weekId() || !unsubWeek) goWeek(mon); else setHash("kw-" + weekId()); }
   function readHash() {
     const h = location.hash.slice(1);
     if (h === "uebersicht") return { route: "overview" };
+    if (h === "benutzer") return { route: "users" };
     const m = /^kw-(\d{4}-W\d{2})$/.exec(h);
     if (m) { const mon = mondayOfWeekId(m[1]); if (mon) return { route: "week", monday: mon }; }
     return null;
   }
   window.addEventListener("hashchange", () => {
-    const r = readHash(); if (!r || !adapter) return;
-    if (r.route === "overview") { if (route !== "overview") { route = "overview"; applyRoute(); } }
+    const r = readHash(); if (!r || !adapter || !ME) return;
+    if (r.route === "overview" || r.route === "users") { if (route !== r.route) { route = r.route; applyRoute(); } }
     else if (route !== "week" || weekIdOf(r.monday) !== weekId()) openWeek(r.monday);
   });
   $("mainNav").addEventListener("click", (e) => {
@@ -648,6 +742,7 @@
       const t = document.querySelector('.wk[data-week="' + weekId() + '"]') || document.querySelector(".wk.cur");
       if (t) t.scrollIntoView({ block: "center" });
     }
+    else if (b.dataset.route === "users") { route = "users"; applyRoute(); setHash("benutzer"); }
     else openWeek(state.monday);
   });
   $("overview").addEventListener("click", (e) => {
@@ -668,6 +763,7 @@
     unsubWeek = adapter.subWeek(id, (data, meta) => {
       if (id !== weekId()) return;
       state.slots = (data && data.slots) || {}; state.cells = (data && data.cells) || {}; state.weekExists = !!data;
+      state.weekMeta = (data && data.meta) || null; renderLastEdit();
       if (!meta.fromCache) clearLoadTimer();
       renderGrid();
     });
@@ -686,6 +782,8 @@
     $("backupStamp").textContent = t ? "Letzte Sicherung: " + new Date(t).toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" }) + " Uhr" : "Noch keine Sicherung heruntergeladen.";
   }
   $("backupBtn").addEventListener("click", () => {
+    if (!state.canAdmin) return;
+    logAudit("backup", "Sicherung heruntergeladen");
     const d = adapter.exportData();
     saveFile(new Blob([JSON.stringify(d, null, 1)], { type: "application/json" }), "Dienstplan_ZNA_Sicherung_" + d.exportedAt.slice(0, 10) + ".json");
     renderBackupStamp();
@@ -697,24 +795,265 @@
   $("restoreFile").addEventListener("change", async () => {
     const f = $("restoreFile").files[0]; $("restoreFile").value = ""; if (!f) return;
     try {
+      if (!state.canAdmin) return;
+      const who = ME.name;
       adapter.importData(JSON.parse(await f.text()));
+      logAudit("restore", "Sicherung geladen von " + who + ": " + f.name);
+      const still = refreshMe(); if (!still) return;
       closePicker(); goWeek(state.monday); renderBackupStamp();
       showNotice("Sicherung vom " + new Date(adapter.lastBackup() || Date.now()).toLocaleDateString("de-DE") + " geladen.");
     } catch (err) { showNotice("Diese Datei ist keine gültige Dienstplan-Sicherung. Wähle eine Datei, die mit „Sicherung herunterladen“ erstellt wurde.", true); }
   });
 
+  // ---------- Benutzer & Rechte ----------
+  function renderLastEdit() {
+    const el = $("lastEdit"), m = state.weekMeta;
+    el.textContent = m && m.at ? "Zuletzt geändert" + (m.by ? " von " + m.by : "") + " · " + new Date(m.at).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) + " Uhr" : "";
+  }
+  const ACTIONS = {
+    setup: "Einrichtung", login: "Anmeldung", login_failed: "Anmeldung fehlgeschlagen", logout: "Abmeldung", timeout: "Automatisch abgemeldet",
+    pin_changed: "PIN geändert", pin_reset: "PIN zurückgesetzt", user_created: "Zugang angelegt", user_updated: "Zugang geändert", user_deleted: "Zugang gelöscht",
+    position_created: "Bereich angelegt", position_updated: "Bereich geändert", position_deleted: "Bereich gelöscht",
+    staff_created: "Mitarbeitende/r angelegt", staff_updated: "Mitarbeitende/r geändert", staff_deleted: "Mitarbeitende/r entfernt",
+    week_changed: "Plan geändert", week_copied: "Vorwoche übernommen", week_cleared: "Woche geleert", backup: "Sicherung", restore: "Sicherung geladen"
+  };
+  const activeAdmins = (exceptId) => adapter.users().filter((u) => u.role === "admin" && u.active !== false && u.id !== exceptId).length;
+  function formMsg(el, text, ok) { el.textContent = text; el.className = "msg" + (ok ? " ok" : ""); el.hidden = !text; }
+  function renderUsers() {
+    if (route !== "users" || !ME) return;
+    const role = ME.role, ms = myStaff();
+    $("rMe").innerHTML = '<span class="av" style="width:48px;height:48px;font-size:17px">' + esc(initials(ME.name)) + '</span>' +
+      '<div class="who"><b>' + esc(ME.name) + '</b><span>Rolle: <span class="role r-' + ROLE_CLS[role] + '">' + ROLE_LABEL[role] + '</span>' + (ms ? ' · verknüpft mit „' + esc(ms.name) + '“' : '') + '</span></div>';
+    const rows = [
+      ["Übersicht und Wochenplan ansehen, PDF exportieren", 1, 1, 1],
+      ["Personen in Bereiche einteilen und entfernen", 1, 1, 0],
+      ["Urlaub, Krank, Fortbildung, Frei eintragen", 1, 1, 0],
+      ["Vorwoche übernehmen, Woche leeren", 1, 1, 0],
+      ["Bereiche und Mindestbesetzung pflegen", 1, 0, 0],
+      ["Mitarbeitende anlegen, ändern, entfernen", 1, 0, 0],
+      ["Zugänge und Rollen verwalten, Protokoll ansehen", 1, 0, 0],
+      ["Sicherung herunterladen und laden", 1, 0, 0],
+      ["Eigene PIN ändern", 1, 1, 1]
+    ];
+    const cols = ["admin", "planner", "reader"];
+    $("rMatrix").innerHTML = '<thead><tr><th>Funktion</th>' + cols.map((c) => '<th class="' + (c === role ? "mine" : "") + '">' + ROLE_LABEL[c] + (c === role ? '<small>deine Rolle</small>' : '') + '</th>').join("") + '</tr></thead><tbody>' +
+      rows.map((r) => '<tr><td>' + r[0] + '</td>' + [1, 2, 3].map((i) => '<td class="' + (r[i] ? "y" : "n") + (cols[i - 1] === role ? " mine" : "") + '">' + (r[i] ? "✓" : "–") + '</td>').join("") + '</tr>').join("") + '</tbody>';
+    $("adminArea").hidden = !state.canAdmin;
+    if (!state.canAdmin) return;
+    const staffSorted = state.staff.slice().sort((a, b) => String(a.name).localeCompare(b.name, "de"));
+    const staffOpts = (cur) => '<option value="">Keine Verknüpfung</option>' + staffSorted.map((s) => '<option value="' + esc(s.id) + '"' + (s.id === cur ? " selected" : "") + '>' + esc(s.name) + '</option>').join("");
+    $("nuStaff").innerHTML = staffOpts("");
+    const users = adapter.users().sort((a, b) => String(a.name).localeCompare(b.name, "de"));
+    let h = '<thead><tr><th>Name</th><th>Rolle</th><th>Mitarbeitende/r</th><th>Aktiv</th><th>Letzte Anmeldung</th><th></th></tr></thead><tbody>';
+    users.forEach((u) => {
+      const id = esc(u.id), self = u.id === ME.id, active = u.active !== false;
+      h += '<tr class="' + (active ? "" : "off") + '" data-uid="' + id + '">' +
+        '<td><input type="text" id="un-' + id + '" data-uf="name" value="' + esc(u.name) + '" aria-label="Name">' + (u.mustChange ? '<small style="color:var(--warn)">vorläufige PIN offen</small>' : '') + '</td>' +
+        '<td><select id="ur-' + id + '" data-uf="role" aria-label="Rolle">' + cols.map((c) => '<option value="' + c + '"' + (u.role === c ? " selected" : "") + '>' + ROLE_LABEL[c] + '</option>').join("") + '</select></td>' +
+        '<td><select id="us-' + id + '" data-uf="staffId" aria-label="Verknüpfte Person">' + staffOpts(u.staffId) + '</select></td>' +
+        '<td><label class="sw"><input type="checkbox" id="ua-' + id + '" data-uf="active"' + (active ? " checked" : "") + (self ? " disabled" : "") + '> ' + (active ? "aktiv" : "gesperrt") + '</label></td>' +
+        '<td class="num" style="font-size:12px;color:var(--muted)">' + (u.lastLogin ? new Date(u.lastLogin).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "short" }) : "noch nie") + '</td>' +
+        '<td><div class="acts"><button class="btn" data-ureset="' + id + '">PIN zurücksetzen</button>' + (self ? '' : '<button class="btn danger" data-udel="' + id + '">Löschen</button>') + '</div></td></tr>';
+    });
+    $("usersTable").innerHTML = h + '</tbody>';
+    $("auditTable").innerHTML = '<thead><tr><th>Zeit</th><th>Wer</th><th>Aktion</th><th>Details</th></tr></thead><tbody>' +
+      adapter.audit().slice(0, 200).map((a) => '<tr><td class="t">' + new Date(a.at).toLocaleString("de-DE", { dateStyle: "short", timeStyle: "medium" }) + '</td><td>' + esc(a.by || "–") + '</td><td>' + esc(ACTIONS[a.action] || a.action) + '</td><td>' + esc(a.detail || "") + '</td></tr>').join("") + '</tbody>';
+  }
+  function showTemp(name, pin) {
+    $("tempBox").innerHTML = '<div class="temp" role="status"><p><b>Vorläufige PIN für ' + esc(name) + ':</b></p><code>' + esc(pin) + '</code>' +
+      '<p>Nur jetzt sichtbar. Gib sie der Person persönlich weiter. Beim ersten Anmelden legt sie eine eigene PIN fest.</p>' +
+      '<div><button class="btn" id="tempHide">Ausblenden</button></div></div>';
+  }
+  $("tempBox").addEventListener("click", (e) => { if (e.target.id === "tempHide") $("tempBox").innerHTML = ""; });
+  $("nuForm").addEventListener("submit", (e) => {
+    e.preventDefault(); if (!state.canAdmin) return;
+    const name = $("nuName").value.trim(); if (!name) return;
+    if (adapter.users().some((u) => u.name.toLowerCase() === name.toLowerCase())) return formMsg($("nuMsg"), "Diesen Namen gibt es schon. Ergänze ihn, damit man die Personen beim Anmelden unterscheiden kann.");
+    const pin = tempPin(), staffId = $("nuStaff").value;
+    if (staffId) adapter.users().filter((u) => u.staffId === staffId).forEach((u) => adapter.saveUser(Object.assign({}, u, { staffId: "" })));
+    adapter.saveUser(Object.assign({ id: newId("u"), name, role: $("nuRole").value, staffId, active: true, mustChange: true, createdAt: new Date().toISOString(), lastLogin: null }, makePin(pin)));
+    logAudit("user_created", name + " (" + ROLE_LABEL[$("nuRole").value] + ")");
+    $("nuName").value = ""; formMsg($("nuMsg"), "");
+    renderUsers(); showTemp(name, pin);
+  });
+  $("usersTable").addEventListener("change", (e) => {
+    const row = e.target.closest("[data-uid]"), f = e.target.dataset.uf; if (!row || !f || !state.canAdmin) return;
+    const u = adapter.getUser(row.dataset.uid); if (!u) return;
+    const next = Object.assign({}, u), val = f === "active" ? e.target.checked : e.target.value.trim();
+    next[f] = val;
+    if (f === "name" && !val) return renderUsers();
+    if (u.role === "admin" && u.active !== false && (next.role !== "admin" || next.active === false) && !activeAdmins(u.id)) { showNotice("Es muss mindestens einen aktiven Zugang mit der Rolle Leitung geben.", true); return renderUsers(); }
+    if (f === "staffId" && val) adapter.users().filter((x) => x.staffId === val && x.id !== u.id).forEach((x) => adapter.saveUser(Object.assign({}, x, { staffId: "" })));
+    adapter.saveUser(next);
+    const what = f === "role" ? "Rolle " + ROLE_LABEL[u.role] + " → " + ROLE_LABEL[val] : f === "active" ? (val ? "entsperrt" : "gesperrt") : f === "staffId" ? (val ? "mit Mitarbeitenden verknüpft" : "Verknüpfung gelöst") : "Name geändert";
+    logAudit("user_updated", next.name + ": " + what);
+    showNotice("Zugang gespeichert."); renderUsers();
+  });
+  $("usersTable").addEventListener("click", (e) => {
+    const rs = e.target.closest("[data-ureset]"), dl = e.target.closest("[data-udel]");
+    if (rs) arm("ur:" + rs.dataset.ureset, rs, () => {
+      const u = adapter.getUser(rs.dataset.ureset); if (!u) return;
+      const pin = tempPin(); adapter.saveUser(Object.assign({}, u, makePin(pin), { mustChange: true }));
+      logAudit("pin_reset", u.name); renderUsers(); showTemp(u.name, pin);
+    });
+    if (dl) arm("ud:" + dl.dataset.udel, dl, () => {
+      const u = adapter.getUser(dl.dataset.udel); if (!u) return;
+      if (u.role === "admin" && u.active !== false && !activeAdmins(u.id)) return showNotice("Es muss mindestens einen aktiven Zugang mit der Rolle Leitung geben.", true);
+      adapter.deleteUser(u.id); logAudit("user_deleted", u.name); showNotice("Zugang gelöscht."); renderUsers();
+    });
+  });
+  $("pwForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const u = adapter.getUser(ME.id);
+    if (!checkPin(u, $("pwCur").value)) return formMsg($("pwMsg"), "Die aktuelle PIN stimmt nicht.");
+    const p = $("pwNew").value, prob = pinProblem(p); if (prob) return formMsg($("pwMsg"), prob);
+    if (p !== $("pwNew2").value) return formMsg($("pwMsg"), "Die beiden neuen PINs stimmen nicht überein.");
+    adapter.saveUser(Object.assign({}, u, makePin(p), { mustChange: false }));
+    ["pwCur", "pwNew", "pwNew2"].forEach((id) => { $(id).value = ""; });
+    logAudit("pin_changed", ME.name); formMsg($("pwMsg"), "PIN geändert.", true);
+  });
+
+  // ---------- Anmeldung mit PIN ----------
+  const SESSION_KEY = "zna-sitzung", LOCK_KEY = "zna-sperre", IDLE_MIN = 15;
+  const APP_PARTS = ["overview", "usersView", "planPanel", "masterData", "dataPanel", "mainNav", "weekNav", "meChip"];
+  const AUTH_PARTS = ["loginView", "setupView", "changeView"];
+  let pickUid = null, lastActivity = Date.now();
+  const lockInfo = () => { try { return JSON.parse(localStorage.getItem(LOCK_KEY) || "{}"); } catch (e) { return {}; } };
+  const setLock = (o) => { try { localStorage.setItem(LOCK_KEY, JSON.stringify(o)); } catch (e) {} };
+  function showAuth(which, msg) {
+    ME = null; closePicker();
+    ["usersTable", "auditTable", "tempBox", "rMe"].forEach((id) => { $(id).innerHTML = ""; }); $("adminArea").hidden = true;
+    APP_PARTS.forEach((id) => { $(id).hidden = true; });
+    AUTH_PARTS.forEach((id) => { $(id).hidden = id !== which + "View"; });
+    $("modeLine").textContent = "Bitte anmelden";
+    if (which === "login") { renderLoginUsers(); backToPick(); if (msg) { $("liPick").hidden = false; formMsg($("liMsg"), ""); showNotice(msg); } }
+    if (which === "setup") setTimeout(() => $("suName").focus(), 0);
+    if (which === "change") setTimeout(() => $("cpPin").focus(), 0);
+  }
+  function renderLoginUsers() {
+    const users = adapter.users().filter((u) => u.active !== false).sort((a, b) => String(a.name).localeCompare(b.name, "de"));
+    const q = $("liSearch").value.trim().toLowerCase();
+    $("liSearch").hidden = users.length <= 8;
+    $("liUsers").innerHTML = users.filter((u) => !q || u.name.toLowerCase().includes(q)).map((u) => '<button class="who-btn" data-login="' + esc(u.id) + '"><span class="av">' + esc(initials(u.name)) + '</span><span>' + esc(u.name) + '</span></button>').join("") || '<p class="msg">Kein Zugang gefunden.</p>';
+  }
+  function backToPick() { pickUid = null; $("pinForm").hidden = true; $("liPick").hidden = false; $("liPin").value = ""; formMsg($("liMsg"), ""); }
+  $("liSearch").addEventListener("input", renderLoginUsers);
+  $("liUsers").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-login]"); if (!b) return;
+    const u = adapter.getUser(b.dataset.login); if (!u) return;
+    pickUid = u.id; $("liAv").textContent = initials(u.name); $("liName").textContent = u.name;
+    $("liPick").hidden = true; $("pinForm").hidden = false; $("liPin").value = ""; formMsg($("liMsg"), "");
+    $("liPin").focus();
+  });
+  $("liBack").addEventListener("click", backToPick);
+  $("keypad").addEventListener("click", (e) => {
+    const k = e.target.closest("[data-k]"); if (!k) return;
+    const f = $("liPin");
+    if (k.dataset.k === "del") f.value = f.value.slice(0, -1); else if (f.value.length < 8) f.value += k.dataset.k;
+    f.focus();
+  });
+  $("liPin").addEventListener("input", () => { $("liPin").value = $("liPin").value.replace(/\D/g, "").slice(0, 8); });
+  $("pinForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const u = adapter.getUser(pickUid); if (!u) return backToPick();
+    const locks = lockInfo(), l = locks[u.id] || { n: 0, until: 0 };
+    if (l.until > Date.now()) return formMsg($("liMsg"), "Zu viele falsche Versuche. Bitte warte " + Math.ceil((l.until - Date.now()) / 60000) + " Minute(n).");
+    if (!checkPin(u, $("liPin").value) || u.active === false) {
+      l.n++; if (l.n >= 5) { l.until = Date.now() + 5 * 60000; l.n = 0; }
+      locks[u.id] = l; setLock(locks);
+      const tmp = ME; ME = { name: u.name }; logAudit("login_failed", ""); ME = tmp;
+      $("liPin").value = "";
+      return formMsg($("liMsg"), l.until > Date.now() ? "Zu viele falsche Versuche. Die Anmeldung ist für 5 Minuten gesperrt." : "Die PIN stimmt nicht.");
+    }
+    delete locks[u.id]; setLock(locks);
+    adapter.saveUser(Object.assign({}, u, { lastLogin: new Date().toISOString() }));
+    loginAs(u.id, true);
+  });
+  function loginAs(uid, fresh) {
+    const u = adapter.getUser(uid); if (!u || u.active === false) return showAuth("login");
+    try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ uid, at: Date.now() })); } catch (e) {}
+    ME = { id: u.id, name: u.name, role: u.role };
+    if (fresh) logAudit("login", "");
+    if (u.mustChange) { AUTH_PARTS.forEach((id) => { $(id).hidden = id !== "changeView"; }); APP_PARTS.forEach((id) => { $(id).hidden = true; }); setTimeout(() => $("cpPin").focus(), 0); return; }
+    enterApp();
+  }
+  function applyMe() {
+    const u = adapter.getUser(ME.id);
+    ME = { id: u.id, name: u.name, role: u.role };
+    state.canAdmin = u.role === "admin"; state.canWrite = u.role !== "reader"; state.myStaffId = u.staffId || null;
+    $("adminArea").hidden = !state.canAdmin;
+    $("meAv").textContent = initials(u.name); $("meName").textContent = u.name; $("meRole").textContent = ROLE_LABEL[u.role];
+  }
+  function enterApp() {
+    AUTH_PARTS.forEach((id) => { $(id).hidden = true; });
+    $("mainNav").hidden = false; $("meChip").hidden = false;
+    $("modeLine").textContent = "Gespeichert in diesem Browser";
+    applyMe(); lastActivity = Date.now();
+    renderChrome(); renderGrid(); renderPositions(); renderStaff(); applyRoute(); renderBackupStamp();
+  }
+  // Prüft nach Änderungen an den Zugängen (auch aus anderen Tabs), ob die angemeldete Person noch gültig ist
+  function refreshMe() {
+    let sess = null; try { sess = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null"); } catch (e) {}
+    const uid = (ME && ME.id) || (sess && sess.uid);
+    const u = uid && adapter.getUser(uid);
+    if (!u || u.active === false) { try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {} showAuth(adapter.users().length ? "login" : "setup", "Du wurdest abgemeldet, weil dein Zugang geändert oder entfernt wurde."); return false; }
+    if (!ME) ME = { id: u.id, name: u.name, role: u.role };
+    const before = ME.role; applyMe();
+    if (before !== u.role) { showNotice("Deine Rolle wurde geändert: " + ROLE_LABEL[u.role] + "."); renderAll(); applyRoute(); }
+    return true;
+  }
+  $("changeForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const p = $("cpPin").value, prob = pinProblem(p); if (prob) return formMsg($("cpMsg"), prob);
+    if (p !== $("cpPin2").value) return formMsg($("cpMsg"), "Die beiden PINs stimmen nicht überein.");
+    const u = adapter.getUser(ME.id); if (!u) return showAuth("login");
+    if (checkPin(u, p)) return formMsg($("cpMsg"), "Bitte wähle eine andere PIN als die vorläufige.");
+    adapter.saveUser(Object.assign({}, u, makePin(p), { mustChange: false }));
+    $("cpPin").value = $("cpPin2").value = ""; formMsg($("cpMsg"), "");
+    logAudit("pin_changed", u.name); enterApp();
+  });
+  $("setupForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (adapter.users().length) return showAuth("login");
+    const name = $("suName").value.trim(), p = $("suPin").value, prob = pinProblem(p);
+    if (!name) return formMsg($("suMsg"), "Bitte gib deinen Namen ein.");
+    if (prob) return formMsg($("suMsg"), prob);
+    if (p !== $("suPin2").value) return formMsg($("suMsg"), "Die beiden PINs stimmen nicht überein.");
+    const id = newId("u");
+    adapter.saveUser(Object.assign({ id, name, role: "admin", staffId: "", active: true, mustChange: false, createdAt: new Date().toISOString(), lastLogin: new Date().toISOString() }, makePin(p)));
+    ME = { id, name, role: "admin" }; logAudit("setup", "Erster Zugang für die Leitung angelegt");
+    loginAs(id, false);
+  });
+  function logout(reason) {
+    if (ME) logAudit(reason === "timeout" ? "timeout" : "logout", "");
+    try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+    route = "week"; setHash("kw-" + weekId());
+    showAuth("login", reason === "timeout" ? "Du wurdest nach " + IDLE_MIN + " Minuten ohne Aktivität abgemeldet." : "");
+  }
+  $("logoutBtn").addEventListener("click", () => logout());
+  ["pointerdown", "keydown", "wheel", "touchstart"].forEach((ev) => document.addEventListener(ev, () => { lastActivity = Date.now(); }, { passive: true }));
+  setInterval(() => {
+    if (!ME) return;
+    if (Date.now() - lastActivity > IDLE_MIN * 60000) return logout("timeout");
+    try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ uid: ME.id, at: lastActivity })); } catch (e) {}
+  }, 20000);
+
   function start() {
     adapter = localAdapter();
-    $("modeLine").textContent = "Gespeichert in diesem Browser · Sicherung unten auf der Seite";
     adapter.subPositions((list) => { state.positions = list; state.loaded.pos = true; renderGrid(); renderPositions(); renderStaff(); renderOverview(); });
-    adapter.subStaff((list) => { state.staff = list; state.loaded.st = true; renderGrid(); renderStaff(); renderOverview(); });
+    adapter.subStaff((list) => { state.staff = list; state.loaded.st = true; renderGrid(); renderStaff(); renderOverview(); if (route === "users") renderUsers(); });
     adapter.subAllWeeks((all) => { state.allWeeks = all; renderOverview(); });
+    adapter.subUsers(() => { if (ME) { if (refreshMe() && route === "users") renderUsers(); } else if (!$("loginView").hidden) renderLoginUsers(); });
     const r = readHash();
-    if (r && r.route === "overview") route = "overview";
+    if (r && (r.route === "overview" || r.route === "users")) route = r.route;
     if (r && r.monday) state.monday = r.monday;
     state.ovYear = isoWeek(state.monday).y;
-    renderChrome(); applyRoute(); renderBackupStamp();
     goWeek(state.monday);
+    APP_PARTS.forEach((id) => { $(id).hidden = true; });
+    if (!adapter.users().length) return showAuth("setup");
+    let sess = null; try { sess = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null"); } catch (e) {}
+    if (sess && sess.uid && Date.now() - sess.at < IDLE_MIN * 60000 && adapter.getUser(sess.uid)) return loginAs(sess.uid, false);
+    showAuth("login");
   }
 
   renderHeader(); renderChrome(); renderPositions(); renderStaff();
