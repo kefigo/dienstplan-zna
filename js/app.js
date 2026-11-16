@@ -338,13 +338,17 @@
     const ro = state.canAdmin ? "" : " disabled", pos = sortedPositions();
     let h = '<div class="row pos hdr"><span>Bereich</span><span>Kürzel</span><span>F</span><span>S</span><span>N</span><span></span></div>';
     if (!pos.length) h += '<p class="hint" style="padding-top:12px">Noch keine Bereiche angelegt.</p>';
-    pos.forEach((p) => {
+    pos.forEach((p, i) => {
       const so = p.soll || {}, armed = state.armed.has("p:" + p.id), id = esc(p.id);
       h += '<div class="row pos" data-pid="' + id + '">' +
-        '<input id="pn-' + id + '" data-f="name" value="' + esc(p.name) + '" aria-label="Bereichsname"' + ro + '>' +
+        '<div class="pname">' + (state.canAdmin && pos.length > 1 ? '<span class="grip" data-grip title="Ziehen, um die Reihenfolge zu ändern" aria-hidden="true">⠿</span>' : '') +
+        '<input id="pn-' + id + '" data-f="name" value="' + esc(p.name) + '" aria-label="Bereichsname"' + ro + '></div>' +
         '<input id="ps-' + id + '" data-f="short" maxlength="5" value="' + esc(p.short || "") + '" aria-label="Kürzel"' + ro + '>' +
         DUTY.map((k) => '<input id="p' + k + '-' + id + '" class="n" type="number" min="0" max="20" data-f="soll.' + k + '" value="' + (so[k] || 0) + '" aria-label="Soll ' + SHIFTS[k].label + '"' + ro + '>').join("") +
-        (state.canAdmin ? '<button class="btn danger' + (armed ? " armed" : "") + '" data-delpos="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button>' : '<span></span>') + '</div>';
+        (state.canAdmin ? '<div class="pacts">' +
+          '<button class="btn icon sm" data-move="-1" data-mpid="' + id + '"' + (i === 0 ? " disabled" : "") + ' aria-label="' + esc(p.name) + ' nach oben" title="Nach oben">↑</button>' +
+          '<button class="btn icon sm" data-move="1" data-mpid="' + id + '"' + (i === pos.length - 1 ? " disabled" : "") + ' aria-label="' + esc(p.name) + ' nach unten" title="Nach unten">↓</button>' +
+          '<button class="btn danger' + (armed ? " armed" : "") + '" data-delpos="' + id + '">' + (armed ? "Sicher?" : "Entfernen") + '</button></div>' : '<span></span>') + '</div>';
     });
     $("posList").innerHTML = h;
     $("posForm").hidden = !state.canAdmin;
@@ -527,6 +531,52 @@
     else next[f] = f === "short" ? e.target.value.trim().toUpperCase() : e.target.value.trim();
     if (!next.name) return renderPositions();
     savePos(next);
+  });
+  // Reihenfolge der Bereiche: Pfeile oder Ziehen am Griff
+  function reorderPositions(ids, focusId, dir) {
+    if (!state.canAdmin) return;
+    const by = posById();
+    ids.forEach((id, i) => { const p = by[id]; if (p && p.order !== i) adapter.savePosition(Object.assign(clone(p), { order: i })).catch((err) => showNotice(errText(err), true)); });
+    logAudit("position_updated", "Reihenfolge: " + ids.map((id) => (by[id] || {}).short || "").join(", "));
+    if (focusId) setTimeout(() => { const b = document.querySelector('[data-mpid="' + focusId + '"][data-move="' + dir + '"]') || document.querySelector('[data-mpid="' + focusId + '"]'); if (b) b.focus(); }, 0);
+  }
+  $("posList").addEventListener("click", (e) => {
+    const mv = e.target.closest("[data-move]");
+    if (mv) {
+      const ids = sortedPositions().map((p) => p.id), i = ids.indexOf(mv.dataset.mpid), j = i + Number(mv.dataset.move);
+      if (i < 0 || j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      return reorderPositions(ids, mv.dataset.mpid, mv.dataset.move);
+    }
+  });
+  let dragPid = null;
+  $("posList").addEventListener("pointerdown", (e) => { const g = e.target.closest("[data-grip]"); if (g) g.closest(".row").setAttribute("draggable", "true"); });
+  $("posList").addEventListener("dragstart", (e) => {
+    const row = e.target.closest("[data-pid]"); if (!row || !state.canAdmin) return;
+    dragPid = row.dataset.pid; row.classList.add("dragging");
+    try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", dragPid); } catch (err) {}
+  });
+  $("posList").addEventListener("dragover", (e) => {
+    const row = e.target.closest("[data-pid]"); if (!row || !dragPid) return;
+    e.preventDefault();
+    const r = row.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+    document.querySelectorAll("#posList .drop-before, #posList .drop-after").forEach((x) => x.classList.remove("drop-before", "drop-after"));
+    if (row.dataset.pid !== dragPid) row.classList.add(after ? "drop-after" : "drop-before");
+  });
+  $("posList").addEventListener("drop", (e) => {
+    const row = e.target.closest("[data-pid]"); if (!row || !dragPid) return;
+    e.preventDefault();
+    const after = row.classList.contains("drop-after"), target = row.dataset.pid;
+    if (target !== dragPid) {
+      const ids = sortedPositions().map((p) => p.id).filter((id) => id !== dragPid);
+      ids.splice(ids.indexOf(target) + (after ? 1 : 0), 0, dragPid);
+      reorderPositions(ids);
+    }
+  });
+  $("posList").addEventListener("dragend", () => {
+    dragPid = null;
+    document.querySelectorAll("#posList [draggable]").forEach((x) => x.removeAttribute("draggable"));
+    document.querySelectorAll("#posList .dragging, #posList .drop-before, #posList .drop-after").forEach((x) => x.classList.remove("dragging", "drop-before", "drop-after"));
   });
   $("posList").addEventListener("click", (e) => {
     const b = e.target.closest("[data-delpos]"); if (!b) return;

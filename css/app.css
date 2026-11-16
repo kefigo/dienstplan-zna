@@ -350,3 +350,19 @@ span.role.r-read { background: var(--surface-2); color: var(--muted); box-shadow
 .rme span.role.r-plan { color: var(--accent); }
 .rme span.role.r-read { color: var(--muted); }
 .form .pinfield { font-size: 20px !important; }
+
+/* Reihenfolge der Bereiche */
+.pname { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pname input { flex: 1; min-width: 0; }
+.grip { cursor: grab; color: var(--muted); font-size: 16px; line-height: 1; padding: 4px 2px; user-select: none; touch-action: none; }
+.pacts { display: flex; gap: 4px; align-items: center; justify-content: flex-end; }
+.btn.icon.sm { width: 30px; height: 30px; font-size: 14px; }
+.btn:disabled { opacity: .35; cursor: default; }
+.row.pos.dragging { opacity: .45; }
+.row.pos.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.row.pos.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.row.pos, form.add.pos { grid-template-columns: minmax(0,1fr) 64px repeat(3, 52px) 172px; }
+.row.pos.hdr > :nth-child(n+2) { text-align: center; }
+@media (max-width: 600px) {
+  .row.pos, form.add.pos { grid-template-columns: minmax(0,1fr) 56px repeat(3, 44px); }
+}

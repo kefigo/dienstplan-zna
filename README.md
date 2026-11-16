@@ -5,6 +5,7 @@ Wochendienstplan für die Notaufnahme als reine Website: HTML, CSS und JavaScrip
 ## Funktionen
 
 - **Wochenplan nach Bereich:** Lieger A, Lieger B, Lieger C, Springer, Aufnahmestation sowie Aufnahme & Triage, jeweils mit Früh, Spät und Nacht. Personen werden von Montag bis Sonntag eingetragen.
+- **Reihenfolge der Bereiche** frei festlegen: unter „Bereiche“ mit den Pfeilen ↑ ↓ oder am Computer durch Ziehen am Griff ⠿. Die Reihenfolge gilt für Wochenplan, Auswahl und PDF.
 - **Ansicht nach Person:** Urlaub, Krank, Fortbildung und Frei eintragen, mit Stundenbilanz gegen die Vertragsstunden.
 - **Prüfungen:** Mindestbesetzung je Bereich und Schicht, Doppelbelegungen, Ruhezeit unter 11 Stunden, Einsätze trotz Abwesenheit.
 - **Qualifikationen** als Kürzel im Plan: PFK, FWB, PH, SCH, PRA, FSJ.
